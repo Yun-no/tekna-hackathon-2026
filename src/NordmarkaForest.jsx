@@ -246,9 +246,9 @@ export default function NordmarkaForest() {
   const landsatScenes = stacData.landsat || [];
 
   // ── NIBIO WMS URLs ──
-  const volumeUrl = nibioWMSTile("SRRVOLUB_H", NORDMARKA.bbox, 600, 500);
-  const speciesUrl = nibioWMSTile("SRRTSL_H", NORDMARKA.bbox, 600, 500);
-  const biomassUrl = nibioWMSTile("SRRBMO_H", NORDMARKA.bbox, 600, 500);
+  const volumeUrl = nibioWMSTile("SRRVOLUB", NORDMARKA.bbox, 600, 500);
+  const speciesUrl = nibioWMSTile("SRRTRESLAG", NORDMARKA.bbox, 600, 500);
+  const biomassUrl = nibioWMSTile("SRRBMO", NORDMARKA.bbox, 600, 500);
 
   const tabs = [
     { id: "overview", label: "Overview", icon: "◉" },
@@ -377,7 +377,7 @@ export default function NordmarkaForest() {
                   <br />URL: {volumeUrl.slice(0, 80)}…
                 </div>
               </div>
-              <div className="source-tag">Source: wms.nibio.no/cgi-bin/sr16 · Layer: SRRVOLUB_H · CRS: EPSG:4326</div>
+              <div className="source-tag">Source: wms.nibio.no/cgi-bin/sr16 · Layer: SRRVOLUB · CRS: EPSG:4326</div>
             </section>
           </div>
         )}
@@ -469,9 +469,9 @@ export default function NordmarkaForest() {
               </p>
               <div className="layer-toggles">
                 {[
-                  { id: "volume", label: "Standing volume (m³/ha)", layer: "SRRVOLUB_H" },
-                  { id: "species", label: "Tree species", layer: "SRRTSL_H" },
-                  { id: "biomass", label: "Biomass (t/ha)", layer: "SRRBMO_H" },
+                  { id: "volume", label: "Standing volume (m³/ha)", layer: "SRRVOLUB" },
+                  { id: "species", label: "Tree species", layer: "SRRTRESLAG" },
+                  { id: "biomass", label: "Biomass (t/ha)", layer: "SRRBMO" },
                 ].map((l) => (
                   <button key={l.id} className={`layer-btn ${nibioLayers[l.id] ? "active" : ""}`}
                     onClick={() => setNibioLayers((p) => ({ ...p, [l.id]: !p[l.id] }))}>
@@ -487,7 +487,7 @@ export default function NordmarkaForest() {
                 <div className="wms-preview large">
                   <img src={volumeUrl} alt="SR16 Volum" className="wms-img" onError={(e) => { e.target.style.display = "none"; }} />
                 </div>
-                <div className="source-tag">WMS Layer: SRRVOLUB_H · BBOX: {NORDMARKA.bbox.join(", ")}</div>
+                <div className="source-tag">WMS Layer: SRRVOLUB · BBOX: {NORDMARKA.bbox.join(", ")}</div>
               </section>
             )}
 
@@ -497,7 +497,7 @@ export default function NordmarkaForest() {
                 <div className="wms-preview large">
                   <img src={speciesUrl} alt="SR16 Tree Species" className="wms-img" onError={(e) => { e.target.style.display = "none"; }} />
                 </div>
-                <div className="source-tag">WMS Layer: SRRTSL_H · CRS: EPSG:4326</div>
+                <div className="source-tag">WMS Layer: SRRTRESLAG · CRS: EPSG:4326</div>
               </section>
             )}
 
@@ -507,7 +507,7 @@ export default function NordmarkaForest() {
                 <div className="wms-preview large">
                   <img src={biomassUrl} alt="SR16 Biomass" className="wms-img" onError={(e) => { e.target.style.display = "none"; }} />
                 </div>
-                <div className="source-tag">WMS Layer: SRRBMO_H</div>
+                <div className="source-tag">WMS Layer: SRRBMO</div>
               </section>
             )}
 
@@ -527,7 +527,7 @@ export default function NordmarkaForest() {
             <section className="card">
               <h2 className="card-title">Available WMS Layers</h2>
               <div style={{ fontSize: 12, fontFamily: "var(--fm)", color: "var(--t2)", lineHeight: 2 }}>
-                {["SRRVOLUB_H – Volume (m³/ha)", "SRRBMO_H – Biomass (tons/ha)", "SRRTSL_H – Tree species", "SRRHOYDE_H – Lorey's mean height", "SRRBON_H – Site index", "SRRHKL_H – Harvest class", "SRRGFL_H – Basal area"].map((l) => (
+                {["SRRVOLUB – Volume (m³/ha)", "SRRBMO – Biomass (tons/ha)", "SRRTRESLAG – Tree species", "SRRHOYDEM – Lorey's mean height", "SRRBONITET – Site index", "SRRKRONEDEK – Crown cover", "SRRGRFLATE – Basal area"].map((l) => (
                   <div key={l}>• {l}</div>
                 ))}
               </div>
