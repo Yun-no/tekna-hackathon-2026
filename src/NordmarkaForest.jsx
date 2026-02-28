@@ -487,7 +487,7 @@ function getLAITrend(history) {
 // ═══ Main App ═══
 
 export default function NordmarkaForest() {
-  const [tab, setTab] = useState("overview");
+  const [tab, setTab] = useState(() => (localStorage.getItem("skogkontroll-mode") || "simple") === "simple" ? "minskog" : "overview");
   const [stacData, setStacData] = useState({ sentinel: null, landsat: null, loading: true, error: null });
   const [weather, setWeather] = useState({ data: null, loading: true, error: null });
   const [laiHistory, setLaiHistory] = useState([]);
@@ -714,8 +714,195 @@ export default function NordmarkaForest() {
       {/* ── Content ── */}
       <main className="main">
 
+        {/* ════════ SIMPLE: MIN SKOG ════════ */}
+        {isSimple && tab === "minskog" && (
+          <div className="grid">
+            {/* Forest Health Hero */}
+            <section className="card wide health-hero" style={{ background: ndviInterpret.color + "18", borderColor: ndviInterpret.color + "40" }}>
+              <div className="hero-content">
+                <div className="hero-indicator" style={{ background: ndviInterpret.color }}>
+                  {ndviInterpret.level === 3 ? "✓" : ndviInterpret.level === 2 ? "~" : "!"}
+                </div>
+                <div className="hero-text">
+                  <h2 className="hero-title" style={{ color: ndviInterpret.color }}>{ndviInterpret.label}</h2>
+                  <p className="hero-desc">{ndviInterpret.description}</p>
+                  <div className="hero-details">
+                    <span className="hero-detail">{laiInterpret.label} — {laiInterpret.description}</span>
+                    <span className="hero-trend" style={{ color: laiTrend === "improving" ? "#2d6a4f" : laiTrend === "declining" ? "#e07a5f" : "#6b6560" }}>
+                      {trendArrow} Trend: {trendLabel}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            {/* Carbon Story */}
+            <section className="card carbon-card">
+              <h2 className="card-title">Skogens karbonlager</h2>
+              <div className="carbon-big">{(totalBiomassMt * 0.47).toFixed(1)} Mt</div>
+              <div className="carbon-label">karbon lagret i Nordmarka</div>
+              <div className="carbon-equiv">{carbonStory}</div>
+              <div style={{ marginTop: 16, fontSize: 13, color: "var(--t2)", lineHeight: 1.6 }}>
+                Hvert år absorberer skogen rundt {(totalBiomassMt * 0.02 * 0.47 * 3.67).toFixed(0)} tusen tonn CO₂ gjennom vekst.
+              </div>
+            </section>
+
+            {/* Quick Weather */}
+            <section className="card">
+              <h2 className="card-title">Været nå</h2>
+              {currentWeather ? (
+                <div>
+                  <div className="simple-weather-hero">
+                    <span className="simple-temp">{temp?.toFixed(0)}°</span>
+                    <span className="simple-weather-desc">
+                      {temp >= 15 ? "Varmt" : temp >= 5 ? "Mildt" : temp >= 0 ? "Kaldt" : "Frost"}
+                      {precipitation > 0 ? " med nedbør" : ""}
+                    </span>
+                  </div>
+                  <div className="simple-weather-details">
+                    <span>Vind: {windSpeed?.toFixed(0)} m/s</span>
+                    <span>Fuktighet: {humidity?.toFixed(0)}%</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="empty">{weather.error ? "Kunne ikke hente vær" : "Henter værdata…"} <LoadingDot /></div>
+              )}
+            </section>
+          </div>
+        )}
+
+        {/* ════════ SIMPLE: SKOGKART ════════ */}
+        {isSimple && tab === "skogkart" && (
+          <div className="grid">
+            <section className="card wide">
+              <h2 className="card-title">Hvor skogen er tykest</h2>
+              <p className="card-desc">Kartet viser stående volum — altså hvor mye tømmer som finnes per dekar. Mørke farger betyr tett, gammel skog.</p>
+              <div className="wms-preview large">
+                <img src={volumeUrl} alt="Stående volum Nordmarka" className="wms-img" onError={(e) => { e.target.style.display = "none"; }} />
+              </div>
+              <div className="simple-legend">
+                <span className="legend-item"><span className="legend-dot" style={{ background: "#1b4332" }} /> Tett skog</span>
+                <span className="legend-item"><span className="legend-dot" style={{ background: "#52b788" }} /> Middels</span>
+                <span className="legend-item"><span className="legend-dot" style={{ background: "#b7e4c7" }} /> Glissent</span>
+                <span className="legend-item"><span className="legend-dot" style={{ background: "#f4f1de" }} /> Åpent</span>
+              </div>
+            </section>
+
+            <section className="card wide">
+              <h2 className="card-title">Hva som vokser hvor</h2>
+              <p className="card-desc">Kartet viser treslag — gran, furu og lauvtrær fordelt over Nordmarka.</p>
+              <div className="wms-preview large">
+                <img src={speciesUrl} alt="Treslag Nordmarka" className="wms-img" onError={(e) => { e.target.style.display = "none"; }} />
+              </div>
+            </section>
+
+            <section className="card">
+              <h2 className="card-title">Om kartene</h2>
+              <div style={{ fontSize: 14, color: "var(--t2)", lineHeight: 1.7 }}>
+                Kartene er laget av NIBIO (Norsk institutt for bioøkonomi) og dekker over 95% av Norges skogareal.
+                De kombinerer data fra landsskogtakseringen, laserscanning og satellittbilder.
+              </div>
+            </section>
+          </div>
+        )}
+
+        {/* ════════ SIMPLE: VÆR OG VEKST ════════ */}
+        {isSimple && tab === "vaervekst" && (
+          <div className="grid">
+            {/* Growing status */}
+            <section className="card wide" style={{
+              background: growingStatus.status === "active" ? "#d8f3dc" : growingStatus.status === "frost" ? "#e3f2fd" : "var(--card)",
+              borderColor: growingStatus.status === "active" ? "#95d5b2" : growingStatus.status === "frost" ? "#90caf9" : "var(--border)",
+            }}>
+              <h2 className="card-title" style={{ fontSize: 20 }}>{growingStatus.headline}</h2>
+              <p style={{ fontSize: 15, color: "var(--t2)", marginTop: 4 }}>
+                {growingStatus.status === "active" || growingStatus.status === "warm"
+                  ? "Trærne vokser aktivt. Vekstsesongen er i gang."
+                  : "Trærne er i dvale og venter på varmere dager."}
+              </p>
+            </section>
+
+            {/* Current weather plain */}
+            {currentWeather && (
+              <section className="card">
+                <h2 className="card-title">Værforhold</h2>
+                <div className="simple-conditions">
+                  <div className="condition-row">
+                    <span className="condition-label">Temperatur</span>
+                    <span className="condition-value">{temp?.toFixed(1)}°C</span>
+                  </div>
+                  <div className="condition-row">
+                    <span className="condition-label">Vind</span>
+                    <span className="condition-value">{windSpeed?.toFixed(0)} m/s {windSpeed > 10 ? "— frisk bris" : windSpeed > 5 ? "— lett bris" : "— stille"}</span>
+                  </div>
+                  <div className="condition-row">
+                    <span className="condition-label">Nedbør</span>
+                    <span className="condition-value">{precipitation != null && precipitation > 0 ? `${precipitation.toFixed(1)} mm/t` : "Ingen"}</span>
+                  </div>
+                  <div className="condition-row">
+                    <span className="condition-label">Luftfuktighet</span>
+                    <span className="condition-value">{humidity?.toFixed(0)}%</span>
+                  </div>
+                </div>
+              </section>
+            )}
+
+            {/* Risk alerts */}
+            {weatherRisks.length > 0 && (
+              <section className="card">
+                <h2 className="card-title">Varsler</h2>
+                <div className="risk-alerts">
+                  {weatherRisks.map((r, i) => (
+                    <div key={i} className="risk-alert" style={{ borderLeftColor: r.color }}>
+                      <div className="risk-label" style={{ color: r.color }}>{r.label}</div>
+                      <div className="risk-desc">{r.description}</div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {/* Seasonal advice */}
+            <section className="card">
+              <h2 className="card-title">Tips for sesongen</h2>
+              <div className="seasonal-tips">
+                {seasonalTips.map((tip, i) => (
+                  <div key={i} className="tip-item">
+                    <span className="tip-bullet">•</span>
+                    <span>{tip}</span>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            {/* Simple 48h outlook */}
+            {weather.data && (
+              <section className="card wide">
+                <h2 className="card-title">Neste 48 timer</h2>
+                <div className="simple-forecast">
+                  {weather.data.properties.timeseries.slice(0, 24).filter((_, i) => i % 6 === 0).map((ts, i) => {
+                    const t = ts.data.instant.details.air_temperature;
+                    const c = ts.data.instant.details.cloud_area_fraction;
+                    const p = ts.data.next_1_hours?.details?.precipitation_amount ?? ts.data.next_6_hours?.details?.precipitation_amount ?? 0;
+                    const time = new Date(ts.time);
+                    const weatherIcon = p > 0.5 ? "🌧" : c > 70 ? "☁" : c > 30 ? "⛅" : "☀";
+                    return (
+                      <div key={i} className="simple-forecast-slot">
+                        <div className="forecast-slot-time">{time.toLocaleDateString("no-NO", { weekday: "short" })} {time.getHours()}:00</div>
+                        <div className="forecast-slot-icon">{weatherIcon}</div>
+                        <div className="forecast-slot-temp" style={{ color: t > 0 ? "#e07a5f" : "#457b9d" }}>{t > 0 ? "+" : ""}{t.toFixed(0)}°</div>
+                        {p > 0 && <div className="forecast-slot-precip">{p.toFixed(1)} mm</div>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
+          </div>
+        )}
+
         {/* ════════ OVERVIEW ════════ */}
-        {tab === "overview" && (
+        {!isSimple && tab === "overview" && (
           <div className="grid">
             <section className="card wide">
               <h2 className="card-title">Nordmarka — Key Metrics</h2>
@@ -839,7 +1026,7 @@ export default function NordmarkaForest() {
         )}
 
         {/* ════════ LAI / NDVI ════════ */}
-        {tab === "lai" && (
+        {!isSimple && tab === "lai" && (
           <div className="grid">
             <section className="card wide">
               <h2 className="card-title">Leaf Area Index (LAI) — Nordmarka</h2>
@@ -915,7 +1102,7 @@ export default function NordmarkaForest() {
         )}
 
         {/* ════════ SR16 MAP ════════ */}
-        {tab === "map" && (
+        {!isSimple && tab === "map" && (
           <div className="grid">
             <section className="card wide">
               <h2 className="card-title">NIBIO SR16 Forest Resource Map — Nordmarka</h2>
@@ -992,7 +1179,7 @@ export default function NordmarkaForest() {
         )}
 
         {/* ════════ SATELLITE SCENES ════════ */}
-        {tab === "scenes" && (
+        {!isSimple && tab === "scenes" && (
           <div className="grid">
             <section className="card wide">
               <h2 className="card-title">Sentinel-2 L2A Scenes — Nordmarka</h2>
@@ -1049,7 +1236,7 @@ export default function NordmarkaForest() {
         )}
 
         {/* ════════ CLIMATE ════════ */}
-        {tab === "climate" && (
+        {!isSimple && tab === "climate" && (
           <div className="grid">
             <section className="card wide">
               <h2 className="card-title">Climate & Growing Season — Nordmarka</h2>
@@ -1315,7 +1502,7 @@ export default function NordmarkaForest() {
         )}
 
         {/* ════════ DIVERSITY ════════ */}
-        {tab === "diversity" && (
+        {!isSimple && tab === "diversity" && (
           <div className="grid">
             <section className="card wide">
               <h2 className="card-title">Spectral Diversity — Nordmarka</h2>
@@ -1674,12 +1861,83 @@ const styles = `
   .loading-dot span:nth-child(3) { animation-delay: 0.4s; }
   @keyframes blink { 0%,80%,100% { opacity: 0.2; } 40% { opacity: 1; } }
 
+  /* ═══ Mode Toggle ═══ */
+  .mode-toggle {
+    display: inline-flex; border-radius: 20px; overflow: hidden;
+    border: 1px solid var(--border); background: var(--bg);
+  }
+  .mode-btn {
+    background: none; border: none; padding: 6px 16px;
+    font-family: var(--fb); font-size: 12px; font-weight: 500;
+    color: var(--t2); cursor: pointer; transition: all 0.2s;
+  }
+  .mode-btn.active {
+    background: var(--green); color: white;
+  }
+
+  /* ═══ Simple Mode Styles ═══ */
+  .simple .card { padding: 24px; }
+  .simple .card-title { font-size: 19px; }
+  .simple .card-desc { font-size: 14px; }
+
+  .health-hero { border-width: 2px; }
+  .hero-content { display: flex; align-items: flex-start; gap: 20px; }
+  .hero-indicator {
+    width: 56px; height: 56px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 28px; color: white; font-weight: 700; flex-shrink: 0;
+  }
+  .hero-text { flex: 1; }
+  .hero-title { font-family: var(--fd); font-size: 24px; margin-bottom: 6px; }
+  .hero-desc { font-size: 15px; color: var(--t2); line-height: 1.5; margin-bottom: 12px; }
+  .hero-details { display: flex; flex-direction: column; gap: 6px; }
+  .hero-detail { font-size: 14px; color: var(--t2); }
+  .hero-trend { font-size: 15px; font-weight: 600; }
+
+  .carbon-card { text-align: center; }
+  .carbon-big { font-family: var(--fd); font-size: 48px; color: var(--green); line-height: 1; margin: 12px 0 4px; }
+  .carbon-label { font-size: 14px; color: var(--t2); margin-bottom: 12px; }
+  .carbon-equiv { font-size: 15px; color: var(--green-d); font-weight: 500; padding: 12px; background: #d8f3dc; border-radius: 8px; }
+
+  .simple-weather-hero { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; }
+  .simple-temp { font-family: var(--fd); font-size: 48px; line-height: 1; }
+  .simple-weather-desc { font-size: 16px; color: var(--t2); }
+  .simple-weather-details { display: flex; gap: 20px; font-size: 14px; color: var(--t2); }
+
+  .simple-legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--t2); }
+  .legend-dot { width: 14px; height: 14px; border-radius: 3px; border: 1px solid var(--border); }
+
+  .simple-conditions { display: flex; flex-direction: column; gap: 8px; }
+  .condition-row { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--bg); font-size: 15px; }
+  .condition-label { color: var(--t2); }
+  .condition-value { font-weight: 500; }
+
+  .risk-alerts { display: flex; flex-direction: column; gap: 10px; }
+  .risk-alert { padding: 12px 16px; background: var(--bg); border-radius: 8px; border-left: 4px solid; }
+  .risk-label { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+  .risk-desc { font-size: 13px; color: var(--t2); }
+
+  .seasonal-tips { display: flex; flex-direction: column; gap: 10px; }
+  .tip-item { display: flex; gap: 10px; font-size: 14px; line-height: 1.5; }
+  .tip-bullet { color: var(--green); font-weight: 700; font-size: 18px; flex-shrink: 0; }
+
+  .simple-forecast { display: flex; gap: 8px; overflow-x: auto; padding: 4px 0; }
+  .simple-forecast-slot {
+    flex: 1; min-width: 100px; padding: 14px 12px; background: var(--bg);
+    border-radius: 10px; text-align: center; border: 1px solid var(--border);
+  }
+  .forecast-slot-time { font-size: 11px; font-family: var(--fm); color: var(--t2); margin-bottom: 6px; }
+  .forecast-slot-icon { font-size: 28px; margin-bottom: 4px; }
+  .forecast-slot-temp { font-size: 20px; font-weight: 700; font-family: var(--fd); }
+  .forecast-slot-precip { font-size: 11px; color: #457b9d; font-family: var(--fm); margin-top: 2px; }
+
   @media (max-width: 700px) {
     .grid { grid-template-columns: 1fr; }
     .scene-header, .scene-row { grid-template-columns: 80px 1fr 60px 60px; }
     .scene-header span:nth-child(5), .scene-row span:nth-child(5),
     .scene-header span:nth-child(6), .scene-row span:nth-child(6) { display: none; }
-    .header-right { display: none; }
+    .header-right { flex-direction: column; align-items: flex-end; }
     .stats-grid { grid-template-columns: 1fr 1fr; }
     .gs-table-header, .gs-table-row { grid-template-columns: 50px 70px 70px 70px 70px; }
     .gs-table-header span:nth-child(6), .gs-table-row span:nth-child(6),
@@ -1687,5 +1945,11 @@ const styles = `
     .div-table-header, .div-table-row { grid-template-columns: 80px 1fr 50px 70px 70px; }
     .div-table-header span:nth-child(6), .div-table-row span:nth-child(6),
     .div-table-header span:nth-child(7), .div-table-row span:nth-child(7) { display: none; }
+    .hero-content { flex-direction: column; gap: 12px; }
+    .hero-indicator { width: 44px; height: 44px; font-size: 22px; }
+    .hero-title { font-size: 20px; }
+    .simple-forecast { flex-wrap: wrap; }
+    .simple-forecast-slot { min-width: 80px; }
+    .mode-toggle { margin-bottom: 4px; }
   }
 `;
