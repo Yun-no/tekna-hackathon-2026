@@ -1165,6 +1165,23 @@ export default function NordmarkaForest() {
                 <div className="wms-preview large">
                   <img src={speciesUrl} alt="SR16 Tree Species" className="wms-img" onError={(e) => { e.target.style.display = "none"; }} />
                 </div>
+                <div className="map-legend">
+                  <div className="legend-title">Legend</div>
+                  <div className="legend-items">
+                    <div className="legend-item">
+                      <span className="legend-color" style={{ background: "#7FFF00" }} />
+                      <span className="legend-label">Spruce</span>
+                    </div>
+                    <div className="legend-item">
+                      <span className="legend-color" style={{ background: "#C4A77D" }} />
+                      <span className="legend-label">Pine</span>
+                    </div>
+                    <div className="legend-item">
+                      <span className="legend-color" style={{ background: "#F0E68C" }} />
+                      <span className="legend-label">Broadleaf</span>
+                    </div>
+                  </div>
+                </div>
                 <div className="source-tag">WMS Layer: SRRTRESLAG · CRS: EPSG:4326</div>
               </section>
             )}
