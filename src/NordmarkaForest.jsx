@@ -334,24 +334,38 @@ export default function NordmarkaForest() {
             </section>
 
             <section className="card">
-              <h2 className="card-title">Biomass Growth Over Time</h2>
-              <p className="card-desc">Estimated from LAI using:<br/><code>Biomass = LAI × 28.5 t/ha</code></p>
-              {laiHistory.length > 0 ? (
-                <div className="bar-chart">
-                  {laiHistory.map((h, i) => {
-                    const biomass = h.lai * 28.5;
-                    const max = Math.max(...laiHistory.map((l) => l.lai * 28.5), 150);
-                    return (
-                      <div key={i} className="bar-col" title={`${h.date}\nLAI: ${h.lai.toFixed(2)}\nBiomass: ${biomass.toFixed(1)} t/ha`}>
-                        <div className="bar" style={{ height: `${(biomass / max) * 100}%`, background: biomass > 100 ? "var(--green-d)" : biomass > 60 ? "var(--green)" : "#52b788", animationDelay: `${i * 60}ms` }} />
-                        <div className="bar-label">{h.month}</div>
-                        <div className="bar-val">{biomass.toFixed(0)}</div>
-                      </div>
-                    );
-                  })}
-                </div>
+              <h2 className="card-title">10-Year Biomass Growth Projection</h2>
+              <p className="card-desc">
+                Accumulated growth over baseline. Norwegian forests grow ~2-4% biomass annually (3% projection).
+              </p>
+              {latestLAI ? (
+                <>
+                  <div className="bar-chart">
+                    {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((year) => {
+                      const currentBiomass = latestLAI.lai * 28.5;
+                      const cumulativeBiomass = currentBiomass * Math.pow(1.03, year);
+                      const growthFromBaseline = cumulativeBiomass - currentBiomass;
+                      const maxGrowth = currentBiomass * (Math.pow(1.03, 10) - 1);
+                      const currentYear = new Date().getFullYear();
+                      const growthPercent = year === 0 ? 0 : ((cumulativeBiomass - currentBiomass) / currentBiomass * 100);
+                      return (
+                        <div key={year} className="bar-col" title={`${currentYear + year}\nTotal: ${cumulativeBiomass.toFixed(1)} t/ha\nGrowth from baseline: +${growthFromBaseline.toFixed(1)} t/ha (+${growthPercent.toFixed(1)}%)`}>
+                          <div className="bar" style={{ height: `${year === 0 ? 5 : (growthFromBaseline / maxGrowth) * 100}%`, background: year === 0 ? "#adb5bd" : "var(--green)", animationDelay: `${year * 60}ms` }} />
+                          <div className="bar-label">{currentYear + year}</div>
+                          <div className="bar-val">{year === 0 ? 'baseline' : `+${growthFromBaseline.toFixed(1)}`}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div style={{ marginTop: 16, fontSize: 12, color: "var(--t2)", lineHeight: 1.6 }}>
+                    <strong>Baseline (current):</strong> {(latestLAI.lai * 28.5).toFixed(1)} t/ha<br/>
+                    <strong>Projected in 10 years:</strong> {(latestLAI.lai * 28.5 * Math.pow(1.03, 10)).toFixed(1)} t/ha 
+                    (+{((latestLAI.lai * 28.5 * (Math.pow(1.03, 10) - 1))).toFixed(1)} t/ha, +{((Math.pow(1.03, 10) - 1) * 100).toFixed(1)}%)<br/>
+                    <strong>Total area growth:</strong> {((latestLAI.lai * 28.5 * Math.pow(1.03, 10) - latestLAI.lai * 28.5) * NORDMARKA.area_km2 * 100 / 1000000).toFixed(2)} Mt additional biomass
+                  </div>
+                </>
               ) : (
-                <div className="empty">Fetching satellite data… <LoadingDot /></div>
+                <div className="empty">Waiting for LAI data…</div>
               )}
             </section>
 
@@ -766,11 +780,12 @@ const styles = `
   .stat-unit { font-size: 12px; color: var(--t2); font-family: var(--fm); }
   .stat-sub { font-size: 11px; color: var(--t2); margin-top: 4px; }
 
-  .bar-chart { display: flex; gap: 4px; height: 140px; align-items: flex-end; padding-bottom: 36px; position: relative; }
-  .bar-col { flex: 1; display: flex; flex-direction: column; align-items: center; height: 100%; position: relative; }
-  .bar-col .bar { width: 100%; border-radius: 3px 3px 0 0; min-height: 2px; animation: grow 0.5s ease both; }
+  .bar-chart { display: flex; gap: 4px; height: 140px; align-items: flex-end; padding-top: 20px; position: relative; }
+  .bar-col { flex: 1; display: flex; flex-direction: column-reverse; align-items: center; height: 100%; position: relative; justify-content: flex-start; }
+  .bar-col .bar { width: 100%; border-radius: 3px 3px 0 0; min-height: 2px; animation: growUp 0.5s ease both; }
   .bar-label { font-size: 9px; font-family: var(--fm); color: var(--t2); margin-top: 4px; }
-  .bar-val { font-size: 8px; font-family: var(--fm); color: var(--t2); }
+  .bar-val { font-size: 8px; font-family: var(--fm); color: var(--t2); margin-bottom: 4px; }
+  @keyframes growUp { from { height: 0 !important; } }
   @keyframes grow { from { height: 0 !important; } }
 
   .weather-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
