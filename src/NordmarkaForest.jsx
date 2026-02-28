@@ -303,6 +303,8 @@ export default function NordmarkaForest() {
                 <StatBlock label="Area" value={NORDMARKA.area_km2} unit="km²" sub={NORDMARKA.elevation} />
                 <StatBlock label="Latest LAI" value={latestLAI ? latestLAI.lai.toFixed(2) : "—"} sub={latestLAI ? `NDVI: ${latestLAI.ndvi.toFixed(3)} · ${latestLAI.date}` : "Loading…"} accent="var(--green)" />
                 <StatBlock label="Avg LAI" value={avgLAI ? avgLAI.toFixed(2) : "—"} sub={`${laiHistory.length} observations`} accent="var(--green)" />
+                <StatBlock label="Biomass" value="120" unit="t/ha" sub="Avg Norwegian forest" accent="var(--green)" />
+                <StatBlock label="Total Biomass" value={(120 * NORDMARKA.area_km2 * 100 / 1000000).toFixed(2)} unit="Mt" sub={`For ${NORDMARKA.area_km2} km²`} accent="var(--green)" />
                 <StatBlock label="Temperature" value={temp != null ? temp.toFixed(1) : "—"} unit="°C" sub={weather.data ? "MET Norway — now" : "Loading…"} />
                 <StatBlock label="Sentinel-2" value={sentinelScenes.length} unit="scenes" sub="< 25% cloud cover" />
                 <StatBlock label="Landsat" value={landsatScenes.length} unit="scenes" sub="Landsat 8/9 C2L2" />
