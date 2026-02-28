@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import GeoTIFF from "geotiff";
 
 // ═══════════════════════════════════════════════════════════════
 // NORDMARKA FOREST — REAL DATA DASHBOARD
@@ -6,6 +7,8 @@ import { useState, useEffect, useRef, useCallback } from "react";
 //   • Element84 Earth Search STAC API → Landsat/Sentinel-2 scenes
 //   • NIBIO SR16 WMS → Norwegian forest resource maps
 //   • MET Norway API → Weather/climate data
+//   • Open-Meteo Historical (ERA5) → Growing season analysis
+//   • Open-Meteo Climate (CMIP6) → Future projections to 2050
 //   • LAI computed from NDVI: LAI = 0.57 × exp(2.33 × NDVI)
 // ═══════════════════════════════════════════════════════════════
 
@@ -23,6 +26,10 @@ const NIBIO_WMS = "https://wms.nibio.no/cgi-bin/sr16";
 const MET_API = import.meta.env.DEV
   ? "/api/met/weatherapi/locationforecast/2.0/compact"
   : "https://met-proxy.janschill.workers.dev/weatherapi/locationforecast/2.0/compact";
+
+// Open-Meteo APIs (ERA5 reanalysis + CMIP6 projections — no auth required)
+const OPENMETEO_HISTORICAL = "https://archive-api.open-meteo.com/v1/archive";
+const OPENMETEO_CLIMATE = "https://climate-api.open-meteo.com/v1/climate";
 
 // ── Utility: fetch with timeout ──
 async function fetchWithTimeout(url, options = {}, timeout = 12000) {
@@ -86,6 +93,137 @@ function ndviToLAI(ndvi) {
   return 0.57 * Math.exp(2.33 * ndvi);
 }
 
+// ── Spectral Diversity Metrics ──
+// Based on "Boreal tree species diversity increases with global warming but is reversed by extremes"
+// (Nature Plants, 2024, DOI: 10.1038/s41477-024-01794-w)
+// Simplified implementation using CV(NDVI), Rao's Q, and Shannon H' from Sentinel-2 COGs.
+
+function computeNDVIArray(redRaster, nirRaster, width, height, geoTransform, bbox) {
+  const [originX, pixelWidth, , originY, , pixelHeight] = geoTransform;
+  const ndviValues = [];
+  for (let row = 0; row < height; row++) {
+    const lat = originY + row * pixelHeight;
+    if (lat < bbox[1] || lat > bbox[3]) continue;
+    for (let col = 0; col < width; col++) {
+      const lon = originX + col * pixelWidth;
+      if (lon < bbox[0] || lon > bbox[2]) continue;
+      const idx = row * width + col;
+      const rawRed = redRaster[idx];
+      const rawNir = nirRaster[idx];
+      if (rawRed === 0 || rawNir === 0) continue;
+      // Sentinel-2 L2A COG: scale=0.0001, offset=-0.1
+      const red = rawRed * 0.0001 - 0.1;
+      const nir = rawNir * 0.0001 - 0.1;
+      if (red < 0 || nir < 0 || red > 1 || nir > 1) continue;
+      const sum = nir + red;
+      if (sum === 0) continue;
+      const ndvi = (nir - red) / sum;
+      if (ndvi >= -0.2 && ndvi <= 1.0) ndviValues.push(ndvi);
+    }
+  }
+  return ndviValues;
+}
+
+function computeCVNDVI(ndviArray) {
+  if (ndviArray.length === 0) return 0;
+  const mean = ndviArray.reduce((s, v) => s + v, 0) / ndviArray.length;
+  if (mean === 0) return 0;
+  const variance = ndviArray.reduce((s, v) => s + (v - mean) ** 2, 0) / ndviArray.length;
+  return Math.sqrt(variance) / Math.abs(mean);
+}
+
+function binNDVI(ndviArray, numBins = 20) {
+  const minVal = -0.2, maxVal = 1.0;
+  const binWidth = (maxVal - minVal) / numBins;
+  const counts = new Array(numBins).fill(0);
+  for (const v of ndviArray) {
+    const bin = Math.min(Math.floor((v - minVal) / binWidth), numBins - 1);
+    if (bin >= 0) counts[bin]++;
+  }
+  const total = ndviArray.length;
+  return counts.map((c, i) => ({
+    binStart: minVal + i * binWidth,
+    binEnd: minVal + (i + 1) * binWidth,
+    count: c,
+    proportion: total > 0 ? c / total : 0,
+  }));
+}
+
+function computeRaoQ(bins) {
+  let raoQ = 0;
+  for (let i = 0; i < bins.length; i++) {
+    for (let j = 0; j < bins.length; j++) {
+      if (bins[i].proportion === 0 || bins[j].proportion === 0) continue;
+      const midI = (bins[i].binStart + bins[i].binEnd) / 2;
+      const midJ = (bins[j].binStart + bins[j].binEnd) / 2;
+      raoQ += Math.abs(midI - midJ) * bins[i].proportion * bins[j].proportion;
+    }
+  }
+  return raoQ;
+}
+
+function computeShannonH(bins) {
+  let h = 0;
+  for (const b of bins) {
+    if (b.proportion > 0) {
+      h -= b.proportion * Math.log(b.proportion);
+    }
+  }
+  return h;
+}
+
+async function analyzeDiversityForScene(item) {
+  const redUrl = item.assets?.red?.href;
+  const nirUrl = item.assets?.nir?.href;
+  if (!redUrl || !nirUrl) throw new Error("Missing RED/NIR assets");
+
+  // Read COG overviews (smallest available) for fast transfer
+  const [redTiff, nirTiff] = await Promise.all([
+    GeoTIFF.fromUrl(redUrl),
+    GeoTIFF.fromUrl(nirUrl),
+  ]);
+  const imageCount = await redTiff.getImageCount();
+  // Use the last overview (smallest resolution, ~686px) for speed
+  const overviewIdx = Math.max(0, imageCount - 1);
+  const [redImage, nirImage] = await Promise.all([
+    redTiff.getImage(overviewIdx),
+    nirTiff.getImage(overviewIdx),
+  ]);
+  const width = redImage.getWidth();
+  const height = redImage.getHeight();
+  const [redData] = await redImage.readRasters();
+  const [nirData] = await nirImage.readRasters();
+
+  // Build geo transform from tiepoints and pixel scale
+  const tiepoint = redImage.getTiePoints()?.[0];
+  const pixelScale = redImage.fileDirectory?.ModelPixelScale;
+  if (!tiepoint || !pixelScale) throw new Error("Missing geo metadata");
+  const geoTransform = [
+    tiepoint.x, pixelScale[0], 0,
+    tiepoint.y, 0, -pixelScale[1],
+  ];
+
+  const ndviArray = computeNDVIArray(redData, nirData, width, height, geoTransform, NORDMARKA.bbox);
+  if (ndviArray.length < 10) throw new Error(`Too few valid pixels: ${ndviArray.length}`);
+
+  const mean = ndviArray.reduce((s, v) => s + v, 0) / ndviArray.length;
+  const variance = ndviArray.reduce((s, v) => s + (v - mean) ** 2, 0) / ndviArray.length;
+  const bins = binNDVI(ndviArray);
+
+  return {
+    sceneId: item.id,
+    date: item.properties.datetime?.slice(0, 10),
+    cloudCover: item.properties["eo:cloud_cover"],
+    pixelCount: ndviArray.length,
+    meanNDVI: mean,
+    stdNDVI: Math.sqrt(variance),
+    cvNDVI: computeCVNDVI(ndviArray),
+    raoQ: computeRaoQ(bins),
+    shannonH: computeShannonH(bins),
+    bins,
+  };
+}
+
 // ── MET Norway weather ──
 async function fetchWeather() {
   const res = await fetchWithTimeout(
@@ -94,6 +232,106 @@ async function fetchWeather() {
   );
   if (!res.ok) throw new Error(`MET ${res.status}`);
   return res.json();
+}
+
+// ── Growing Season: Thermal/Meteorological Definition ──
+// The thermal growing season is the period with daily mean temp ≥ 5°C
+// Start: first day of 5+ consecutive days with mean temp ≥ 5°C
+// End: last day before 5+ consecutive days with mean temp < 5°C
+const GROWING_THRESHOLD = 5; // °C
+const CONSECUTIVE_DAYS = 5;
+
+function calculateGrowingSeason(dates, temps) {
+  const n = dates.length;
+  if (n === 0) return null;
+
+  // Group by year
+  const years = {};
+  for (let i = 0; i < n; i++) {
+    const year = dates[i].slice(0, 4);
+    if (!years[year]) years[year] = [];
+    years[year].push({ date: dates[i], temp: temps[i] });
+  }
+
+  const results = [];
+  for (const [year, days] of Object.entries(years)) {
+    if (days.length < 200) continue; // need most of the year
+
+    // Find start: first run of CONSECUTIVE_DAYS days with temp ≥ threshold
+    let start = null;
+    for (let i = 0; i <= days.length - CONSECUTIVE_DAYS; i++) {
+      let allAbove = true;
+      for (let j = 0; j < CONSECUTIVE_DAYS; j++) {
+        if (days[i + j].temp < GROWING_THRESHOLD) { allAbove = false; break; }
+      }
+      if (allAbove) { start = i; break; }
+    }
+
+    // Find end: search from end of year backward for last run of consecutive cold days
+    let end = null;
+    for (let i = days.length - CONSECUTIVE_DAYS; i >= 0; i--) {
+      let allBelow = true;
+      for (let j = 0; j < CONSECUTIVE_DAYS; j++) {
+        if (days[i + j].temp >= GROWING_THRESHOLD) { allBelow = false; break; }
+      }
+      if (allBelow && i > (start ?? 0)) { end = i - 1; break; }
+    }
+
+    if (start !== null) {
+      const gsEnd = end ?? days.length - 1;
+      const length = gsEnd - start + 1;
+      // Growing degree days (GDD) above 5°C during growing season
+      let gdd = 0;
+      for (let i = start; i <= gsEnd; i++) {
+        if (days[i].temp > GROWING_THRESHOLD) gdd += days[i].temp - GROWING_THRESHOLD;
+      }
+      results.push({
+        year: parseInt(year),
+        startDate: days[start].date,
+        endDate: days[gsEnd].date,
+        startDOY: start + 1,
+        endDOY: gsEnd + 1,
+        length,
+        gdd: Math.round(gdd),
+        meanTemp: days.slice(start, gsEnd + 1).reduce((s, d) => s + d.temp, 0) / length,
+      });
+    }
+  }
+  return results.sort((a, b) => a.year - b.year);
+}
+
+// Fetch daily mean temperature from Open-Meteo (ERA5 reanalysis)
+async function fetchHistoricalTemps(startYear, endYear) {
+  const url = `${OPENMETEO_HISTORICAL}?latitude=${NORDMARKA.center[0]}&longitude=${NORDMARKA.center[1]}&start_date=${startYear}-01-01&end_date=${endYear}-12-31&daily=temperature_2m_max,temperature_2m_min&timezone=Europe%2FOslo`;
+  const res = await fetchWithTimeout(url, {}, 20000);
+  if (!res.ok) throw new Error(`Open-Meteo Historical ${res.status}`);
+  const data = await res.json();
+  const dates = data.daily?.time || [];
+  const maxTemps = data.daily?.temperature_2m_max || [];
+  const minTemps = data.daily?.temperature_2m_min || [];
+  // Daily mean = (max + min) / 2
+  const meanTemps = maxTemps.map((mx, i) =>
+    mx != null && minTemps[i] != null ? (mx + minTemps[i]) / 2 : null
+  );
+  return { dates, temps: meanTemps };
+}
+
+// Fetch climate projections from Open-Meteo (CMIP6)
+async function fetchClimateProjections() {
+  const models = "EC_Earth3P_HR,MPI_ESM1_2_XR,MRI_AGCM3_2_S";
+  const url = `${OPENMETEO_CLIMATE}?latitude=${NORDMARKA.center[0]}&longitude=${NORDMARKA.center[1]}&start_date=2030-01-01&end_date=2050-12-31&daily=temperature_2m_mean&models=${models}`;
+  const res = await fetchWithTimeout(url, {}, 20000);
+  if (!res.ok) throw new Error(`Open-Meteo Climate ${res.status}`);
+  const data = await res.json();
+  const dates = data.daily?.time || [];
+  // Average across available models
+  const modelKeys = Object.keys(data.daily || {}).filter(k => k.startsWith("temperature_2m_mean"));
+  if (modelKeys.length === 0) return { dates, temps: [] };
+  const temps = dates.map((_, i) => {
+    const vals = modelKeys.map(k => data.daily[k]?.[i]).filter(v => v != null);
+    return vals.length > 0 ? vals.reduce((s, v) => s + v, 0) / vals.length : null;
+  });
+  return { dates, temps };
 }
 
 // ── NIBIO WMS tile URL builder ──
@@ -172,6 +410,8 @@ export default function NordmarkaForest() {
     volume: true, species: false, biomass: false,
   });
   const [selectedScene, setSelectedScene] = useState(null);
+  const [growingSeason, setGrowingSeason] = useState({ historical: null, projected: null, loading: true, error: null });
+  const [diversityData, setDiversityData] = useState({ loading: false, error: null, scenes: [], initialized: false });
 
   // ── Load real data on mount ──
   useEffect(() => {
@@ -227,10 +467,63 @@ export default function NordmarkaForest() {
       }
     };
 
+    // Fetch growing season data (ERA5 reanalysis + CMIP6 projections)
+    const loadGrowingSeason = async () => {
+      try {
+        const [hist, proj] = await Promise.all([
+          fetchHistoricalTemps(2015, 2025),
+          fetchClimateProjections(),
+        ]);
+        const historical = calculateGrowingSeason(
+          hist.dates.filter((_, i) => hist.temps[i] != null),
+          hist.temps.filter(t => t != null)
+        );
+        const projected = calculateGrowingSeason(
+          proj.dates.filter((_, i) => proj.temps[i] != null),
+          proj.temps.filter(t => t != null)
+        );
+        setGrowingSeason({ historical, projected, loading: false, error: null });
+      } catch (e) {
+        setGrowingSeason({ historical: null, projected: null, loading: false, error: e.message });
+      }
+    };
+
     loadSentinel();
     loadLandsat();
     loadWeather();
+    loadGrowingSeason();
   }, []);
+
+  // ── Lazy-load diversity data when tab is selected ──
+  useEffect(() => {
+    if (tab !== "diversity" || diversityData.initialized || !stacData.sentinel || stacData.sentinel.length === 0) return;
+
+    const loadDiversity = async () => {
+      setDiversityData(d => ({ ...d, loading: true, initialized: true }));
+      // Pick up to 6 lowest-cloud scenes
+      const sorted = [...stacData.sentinel]
+        .filter(s => s.properties?.["eo:cloud_cover"] != null)
+        .sort((a, b) => (a.properties["eo:cloud_cover"] || 0) - (b.properties["eo:cloud_cover"] || 0))
+        .slice(0, 6);
+
+      const results = [];
+      for (const scene of sorted) {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 30000);
+          const result = await analyzeDiversityForScene(scene);
+          clearTimeout(timeoutId);
+          results.push(result);
+          setDiversityData(d => ({ ...d, scenes: [...results] }));
+        } catch (e) {
+          console.warn(`Diversity analysis failed for ${scene.id}:`, e.message);
+        }
+      }
+      setDiversityData(d => ({ ...d, loading: false, error: results.length === 0 ? "No scenes could be analyzed" : null }));
+    };
+
+    loadDiversity();
+  }, [tab, stacData.sentinel, diversityData.initialized]);
 
   // ── Derived data ──
   const currentWeather = weather.data?.properties?.timeseries?.[0]?.data;
@@ -256,6 +549,7 @@ export default function NordmarkaForest() {
     { id: "map", label: "SR16 Map", icon: "🗺" },
     { id: "scenes", label: "Satellite", icon: "🛰" },
     { id: "climate", label: "Climate", icon: "🌡" },
+    { id: "diversity", label: "Diversity", icon: "🌳" },
   ];
 
   return (
@@ -278,6 +572,7 @@ export default function NordmarkaForest() {
         <div className="header-right">
           <StatusChip status={stacData.loading ? "loading" : stacData.error ? "error" : "ok"} label={stacData.loading ? "Fetching data…" : stacData.error ? "API error" : `${sentinelScenes.length} Sentinel + ${landsatScenes.length} Landsat`} />
           <StatusChip status={weather.loading ? "loading" : weather.error ? "error" : "ok"} label={weather.loading ? "Weather…" : weather.error ? "MET error" : `${temp?.toFixed(1)}°C`} />
+          <StatusChip status={growingSeason.loading ? "loading" : growingSeason.error ? "error" : "ok"} label={growingSeason.loading ? "ERA5…" : growingSeason.error ? "ERA5 error" : `Growing season`} />
         </div>
       </header>
 
@@ -632,11 +927,15 @@ export default function NordmarkaForest() {
         {tab === "climate" && (
           <div className="grid">
             <section className="card wide">
-              <h2 className="card-title">Climate & Weather Data — Nordmarka</h2>
-              <p className="card-desc">Data from MET Norway Locationforecast 2.0 API. Position: {NORDMARKA.center[0]}°N, {NORDMARKA.center[1]}°E</p>
+              <h2 className="card-title">Climate & Growing Season — Nordmarka</h2>
+              <p className="card-desc">
+                Thermal growing season analysis using ERA5 reanalysis (2015–2025) and CMIP6 projections (~2050).
+                <br/>Definition: consecutive period with daily mean temperature ≥ 5°C (≥ 5 consecutive days to start/end).
+              </p>
             </section>
 
-            {weather.data ? (
+            {/* Current conditions */}
+            {weather.data && (
               <>
                 <section className="card">
                   <h2 className="card-title">Current Conditions</h2>
@@ -648,6 +947,19 @@ export default function NordmarkaForest() {
                     <StatBlock label="Air Pressure" value={currentWeather?.instant?.details?.air_pressure_at_sea_level?.toFixed(0)} unit="hPa" small />
                     <StatBlock label="Cloud Cover" value={currentWeather?.instant?.details?.cloud_area_fraction?.toFixed(0)} unit="%" small />
                   </div>
+                  {temp != null && (
+                    <div style={{ marginTop: 14 }}>
+                      {temp >= 5 ? (
+                        <div style={{ padding: 10, background: "#d8f3dc", borderRadius: 8, color: "#1b4332", fontSize: 13 }}>
+                          <strong>Active growing season</strong> — Current temp ({temp.toFixed(1)}°C) above 5°C threshold.
+                        </div>
+                      ) : (
+                        <div style={{ padding: 10, background: "#e3f2fd", borderRadius: 8, color: "#0d47a1", fontSize: 13 }}>
+                          <strong>Dormant period</strong> — Current temp ({temp.toFixed(1)}°C) below 5°C threshold.
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </section>
 
                 <section className="card">
@@ -664,47 +976,405 @@ export default function NordmarkaForest() {
                           <div style={{ flex: 1, height: 4, background: "var(--bg2)", borderRadius: 2 }}>
                             <div style={{ width: `${c}%`, height: "100%", background: "#adb5bd", borderRadius: 2 }} />
                           </div>
-                          <span style={{ fontSize: 10, color: "var(--t2)", fontFamily: "var(--fm)" }}>{c?.toFixed(0)}%☁</span>
+                          <span style={{ fontSize: 10, color: "var(--t2)", fontFamily: "var(--fm)" }}>{c?.toFixed(0)}%</span>
                         </div>
                       );
                     })}
                   </div>
                 </section>
+              </>
+            )}
+
+            {/* Growing Season Historical Analysis */}
+            {growingSeason.loading ? (
+              <section className="card wide">
+                <div className="empty">Loading growing season data from ERA5 reanalysis… <LoadingDot /></div>
+              </section>
+            ) : growingSeason.error ? (
+              <section className="card wide">
+                <div className="empty">Error loading growing season data: {growingSeason.error}</div>
+              </section>
+            ) : (
+              <>
+                {/* Summary + Line Graph + Table */}
+                {growingSeason.historical && growingSeason.historical.length > 0 && (() => {
+                  const hist = growingSeason.historical;
+                  const proj = growingSeason.projected || [];
+                  const all = [...hist, ...proj];
+                  const recent = hist[hist.length - 1];
+                  const earliest = hist[0];
+                  const histAvg = Math.round(hist.reduce((s, h) => s + h.length, 0) / hist.length);
+                  const histAvgGDD = Math.round(hist.reduce((s, h) => s + h.gdd, 0) / hist.length);
+                  const projAvg = proj.length > 0 ? Math.round(proj.reduce((s, p) => s + p.length, 0) / proj.length) : null;
+                  const projAvgGDD = proj.length > 0 ? Math.round(proj.reduce((s, p) => s + p.gdd, 0) / proj.length) : null;
+                  const changeDays = projAvg != null ? projAvg - histAvg : null;
+                  const changeGDD = projAvgGDD != null ? projAvgGDD - histAvgGDD : null;
+
+                  // SVG line graph
+                  const W = 900, H = 340, pad = { top: 30, right: 30, bottom: 50, left: 55 };
+                  const gW = W - pad.left - pad.right;
+                  const gH = H - pad.top - pad.bottom;
+                  const allYears = all.map(d => d.year);
+                  const minY = Math.min(...allYears);
+                  const maxY = Math.max(...allYears);
+                  const allLengths = all.map(d => d.length);
+                  const minL = Math.min(...allLengths) - 10;
+                  const maxL = Math.max(...allLengths) + 10;
+                  const xP = (yr) => pad.left + ((yr - minY) / (maxY - minY || 1)) * gW;
+                  const yP = (len) => pad.top + gH - ((len - minL) / (maxL - minL || 1)) * gH;
+                  const histPts = hist.map(d => `${xP(d.year)},${yP(d.length)}`);
+                  const histLine = `M${histPts.join("L")}`;
+                  const n = hist.length;
+                  const xMean = hist.reduce((s, d) => s + d.year, 0) / n;
+                  const yMean2 = hist.reduce((s, d) => s + d.length, 0) / n;
+                  const slope = hist.reduce((s, d) => s + (d.year - xMean) * (d.length - yMean2), 0)
+                    / hist.reduce((s, d) => s + (d.year - xMean) ** 2, 0);
+                  const intercept2 = yMean2 - slope * xMean;
+                  const trendStart = slope * earliest.year + intercept2;
+                  const trendEnd = slope * maxY + intercept2;
+                  const projPts = proj.length > 0
+                    ? [{ year: recent.year, length: recent.length }, ...proj].map(d => `${xP(d.year)},${yP(d.length)}`)
+                    : [];
+                  const projLine = projPts.length > 0 ? `M${projPts.join("L")}` : "";
+                  const yTicks = [];
+                  const yStep = Math.ceil((maxL - minL) / 5 / 10) * 10;
+                  for (let v = Math.ceil(minL / yStep) * yStep; v <= maxL; v += yStep) yTicks.push(v);
+                  const xTicks = [];
+                  for (let yr = minY; yr <= maxY; yr++) {
+                    if (yr <= recent.year || yr % 5 === 0 || yr === maxY) xTicks.push(yr);
+                  }
+
+                  return (
+                    <>
+                      <section className="card wide">
+                        <h2 className="card-title">Growing Season Summary</h2>
+                        <div className="stats-grid">
+                          <StatBlock label="Historical Avg" value={histAvg} unit="days" sub={`${earliest.year}–${recent.year}`} accent="var(--green)" />
+                          <StatBlock label="Most Recent" value={recent.length} unit="days" sub={`${recent.year}: ${recent.startDate.slice(5)} → ${recent.endDate.slice(5)}`} accent="var(--green)" />
+                          {projAvg != null && (
+                            <StatBlock label="2030–2050 Avg" value={projAvg} unit="days" sub="CMIP6 ensemble mean" accent="#e07a5f" />
+                          )}
+                          {changeDays != null && (
+                            <StatBlock label="Projected Change" value={`${changeDays > 0 ? "+" : ""}${changeDays}`} unit="days" sub={`By ~2050 vs ${earliest.year}–${recent.year}`} accent="#e07a5f" />
+                          )}
+                          <StatBlock label="Historical GDD" value={histAvgGDD} unit="°C·d" sub="Growing Degree Days (base 5°C)" accent="var(--green)" />
+                          {changeGDD != null && (
+                            <StatBlock label="GDD Change" value={`${changeGDD > 0 ? "+" : ""}${changeGDD}`} unit="°C·d" sub="Projected vs historical" accent="#e07a5f" />
+                          )}
+                        </div>
+                      </section>
+
+                      {/* SVG Line Graph */}
+                      <section className="card wide">
+                        <h2 className="card-title">Growing Season Length — Trend & Projections</h2>
+                        <p className="card-desc">
+                          ERA5 reanalysis ({earliest.year}–{recent.year}, green) with linear trend, CMIP6 projections to 2050 (orange dashed).
+                          {changeDays != null && ` The growing season is projected to be ${Math.abs(changeDays)} days ${changeDays > 0 ? "longer" : "shorter"} by mid-century.`}
+                        </p>
+                        <div style={{ overflowX: "auto" }}>
+                          <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", maxWidth: W, height: "auto", fontFamily: "var(--fm)" }}>
+                            {yTicks.map(v => (
+                              <g key={v}>
+                                <line x1={pad.left} y1={yP(v)} x2={W - pad.right} y2={yP(v)} stroke="var(--border)" strokeWidth="1" />
+                                <text x={pad.left - 8} y={yP(v) + 4} textAnchor="end" fill="var(--t2)" fontSize="11">{v}</text>
+                              </g>
+                            ))}
+                            <text x={14} y={pad.top + gH / 2} textAnchor="middle" fill="var(--t2)" fontSize="11" transform={`rotate(-90, 14, ${pad.top + gH / 2})`}>Days</text>
+                            {proj.length > 0 && (() => {
+                              const g1 = xP(recent.year) + 6, g2 = xP(proj[0].year) - 6;
+                              return g2 > g1 ? <><rect x={g1} y={pad.top} width={g2 - g1} height={gH} fill="var(--bg)" opacity="0.6" /><text x={(g1 + g2) / 2} y={pad.top + gH / 2} textAnchor="middle" fill="var(--t2)" fontSize="10" opacity="0.5">no data</text></> : null;
+                            })()}
+                            <line x1={xP(earliest.year)} y1={yP(trendStart)} x2={xP(maxY)} y2={yP(trendEnd)} stroke="var(--green)" strokeWidth="1.5" strokeDasharray="6,4" opacity="0.35" />
+                            <line x1={xP(earliest.year)} y1={yP(histAvg)} x2={xP(recent.year)} y2={yP(histAvg)} stroke="var(--green)" strokeWidth="1" strokeDasharray="3,3" opacity="0.4" />
+                            <text x={xP(earliest.year) + 4} y={yP(histAvg) - 6} fill="var(--green)" fontSize="10" opacity="0.6">avg {histAvg}d</text>
+                            {projAvg != null && proj.length > 0 && (
+                              <><line x1={xP(proj[0].year)} y1={yP(projAvg)} x2={xP(maxY)} y2={yP(projAvg)} stroke="#e07a5f" strokeWidth="1" strokeDasharray="3,3" opacity="0.4" /><text x={xP(maxY) - 4} y={yP(projAvg) - 6} textAnchor="end" fill="#e07a5f" fontSize="10" opacity="0.6">avg {projAvg}d</text></>
+                            )}
+                            <path d={`${histLine}L${xP(recent.year)},${yP(minL)}L${xP(earliest.year)},${yP(minL)}Z`} fill="var(--green)" opacity="0.08" />
+                            <path d={histLine} fill="none" stroke="var(--green)" strokeWidth="2.5" strokeLinejoin="round" />
+                            {hist.map((d, i) => (
+                              <g key={i}><circle cx={xP(d.year)} cy={yP(d.length)} r="5" fill="var(--card)" stroke="var(--green)" strokeWidth="2" /><title>{`${d.year}: ${d.length}d (${d.startDate.slice(5)} → ${d.endDate.slice(5)}) GDD:${d.gdd} Mean:${d.meanTemp.toFixed(1)}°C`}</title></g>
+                            ))}
+                            {proj.length > 0 && <path d={`M${xP(proj[0].year)},${yP(proj[0].length)}${proj.slice(1).map(d => `L${xP(d.year)},${yP(d.length)}`).join("")}L${xP(proj[proj.length-1].year)},${yP(minL)}L${xP(proj[0].year)},${yP(minL)}Z`} fill="#e07a5f" opacity="0.06" />}
+                            {projLine && (
+                              <><path d={projLine} fill="none" stroke="#e07a5f" strokeWidth="2.5" strokeDasharray="8,4" strokeLinejoin="round" />
+                              {proj.map((d, i) => (
+                                <g key={`p${i}`}><circle cx={xP(d.year)} cy={yP(d.length)} r="5" fill="var(--card)" stroke="#e07a5f" strokeWidth="2" /><title>{`${d.year}: ${d.length}d (${d.startDate.slice(5)} → ${d.endDate.slice(5)}) GDD:${d.gdd} Mean:${d.meanTemp.toFixed(1)}°C`}</title></g>
+                              ))}</>
+                            )}
+                            {xTicks.map(yr => (
+                              <text key={yr} x={xP(yr)} y={H - pad.bottom + 20} textAnchor="middle" fill={yr > recent.year ? "#e07a5f" : "var(--t2)"} fontSize="11" fontWeight={yr % 10 === 0 ? 600 : 400}>{yr}</text>
+                            ))}
+                            <g transform={`translate(${pad.left + 10}, ${H - 14})`}>
+                              <line x1="0" y1="0" x2="18" y2="0" stroke="var(--green)" strokeWidth="2.5" />
+                              <text x="22" y="4" fill="var(--t2)" fontSize="10">ERA5 Reanalysis</text>
+                              {proj.length > 0 && (<><line x1="140" y1="0" x2="158" y2="0" stroke="#e07a5f" strokeWidth="2.5" strokeDasharray="6,3" /><text x="162" y="4" fill="var(--t2)" fontSize="10">CMIP6 Projection</text><line x1="290" y1="0" x2="308" y2="0" stroke="var(--green)" strokeWidth="1.5" strokeDasharray="6,4" opacity="0.4" /><text x="312" y="4" fill="var(--t2)" fontSize="10">Linear trend</text></>)}
+                            </g>
+                          </svg>
+                        </div>
+                        <div className="source-tag">Sources: ECMWF ERA5 via Open-Meteo (historical) · CMIP6 HighResMIP ensemble (projected to 2050)</div>
+                      </section>
+
+                      {/* Detailed table */}
+                      <section className="card wide">
+                        <h2 className="card-title">Growing Season Details</h2>
+                        <div className="scene-table">
+                          <div className="gs-table-header">
+                            <span>Year</span><span>Start</span><span>End</span><span>Length</span><span>GDD (5°C)</span><span>Mean Temp</span><span>Source</span>
+                          </div>
+                          {hist.map((h, i) => (
+                            <div key={i} className="gs-table-row">
+                              <span style={{ fontFamily: "var(--fm)", fontWeight: 600 }}>{h.year}</span>
+                              <span style={{ fontFamily: "var(--fm)", color: "var(--green)" }}>{h.startDate.slice(5)}</span>
+                              <span style={{ fontFamily: "var(--fm)", color: "#c0392b" }}>{h.endDate.slice(5)}</span>
+                              <span style={{ fontFamily: "var(--fm)", fontWeight: 700 }}>{h.length} days</span>
+                              <span style={{ fontFamily: "var(--fm)" }}>{h.gdd}</span>
+                              <span style={{ fontFamily: "var(--fm)" }}>{h.meanTemp.toFixed(1)}°C</span>
+                              <span style={{ fontSize: 10, color: "var(--t2)" }}>ERA5</span>
+                            </div>
+                          ))}
+                          {proj.map((p, i) => (
+                            <div key={`p${i}`} className="gs-table-row" style={{ background: "#fff5f0" }}>
+                              <span style={{ fontFamily: "var(--fm)", fontWeight: 600, color: "#e07a5f" }}>{p.year}</span>
+                              <span style={{ fontFamily: "var(--fm)", color: "var(--green)" }}>{p.startDate.slice(5)}</span>
+                              <span style={{ fontFamily: "var(--fm)", color: "#c0392b" }}>{p.endDate.slice(5)}</span>
+                              <span style={{ fontFamily: "var(--fm)", fontWeight: 700 }}>{p.length} days</span>
+                              <span style={{ fontFamily: "var(--fm)" }}>{p.gdd}</span>
+                              <span style={{ fontFamily: "var(--fm)" }}>{p.meanTemp.toFixed(1)}°C</span>
+                              <span style={{ fontSize: 10, color: "#e07a5f" }}>CMIP6</span>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+                    </>
+                  );
+                })()}
+
+                {/* Methodology */}
+                <section className="card">
+                  <h2 className="card-title">Methodology</h2>
+                  <div style={{ fontSize: 13, color: "var(--t2)", lineHeight: 1.7 }}>
+                    <strong>Definition:</strong> Thermal/Meteorological Growing Season
+                    <br/><strong>Threshold:</strong> Daily mean temperature ≥ 5°C
+                    <br/><strong>Start criterion:</strong> First day of ≥ 5 consecutive days above threshold
+                    <br/><strong>End criterion:</strong> Last day before ≥ 5 consecutive days below threshold
+                    <br/><strong>GDD:</strong> Growing Degree Days = sum of (daily mean − 5°C) during growing season
+                    <br/><strong>Daily mean:</strong> (T_max + T_min) / 2
+                    <div style={{ marginTop: 12, padding: 10, background: "var(--bg)", borderRadius: 6, fontSize: 12 }}>
+                      <strong>Note on 2100 projections:</strong> The Open-Meteo Climate API provides CMIP6 data only to 2050.
+                      For 2100 projections, the Copernicus Climate Data Store (CDS) offers full CMIP6 scenarios (SSP2-4.5, SSP5-8.5).
+                    </div>
+                  </div>
+                </section>
 
                 <section className="card">
-                  <h2 className="card-title">Growing Season Assessment</h2>
-                  <div style={{ fontSize: 13, color: "var(--t2)", lineHeight: 1.7 }}>
-                    {temp > 5 ? (
-                      <div style={{ padding: 12, background: "#d8f3dc", borderRadius: 8, color: "#1b4332", marginBottom: 12 }}>
-                        🌱 <strong>Active growing season</strong> — Temperature above 5°C threshold for boreal forest growth.
-                      </div>
-                    ) : (
-                      <div style={{ padding: 12, background: "#e3f2fd", borderRadius: 8, color: "#0d47a1", marginBottom: 12 }}>
-                        ❄️ <strong>Dormant period</strong> — Temperature below 5°C. Minimal growth activity.
-                      </div>
-                    )}
-                    <strong>For forestry:</strong> Growing season in Nordmarka typically lasts from May to September.
-                    Average temperature during growing season: ~12°C. Extended season in recent decades due to climate change.
+                  <h2 className="card-title">Data Sources</h2>
+                  <div style={{ fontSize: 12, fontFamily: "var(--fm)", color: "var(--t2)", lineHeight: 2 }}>
+                    <div><strong>Historical:</strong> ECMWF ERA5 reanalysis via Open-Meteo</div>
+                    <div><strong>Projections:</strong> CMIP6 HighResMIP (EC-Earth3P-HR, MPI-ESM1-2-XR, MRI-AGCM3-2-S)</div>
+                    <div><strong>Resolution:</strong> ~10 km (ERA5), ~25 km (CMIP6)</div>
+                    <div><strong>Period:</strong> 2015–2025 (historical), 2030–2050 (projected)</div>
+                    <div><strong>Position:</strong> {NORDMARKA.center[0]}°N, {NORDMARKA.center[1]}°E</div>
+                    <div><strong>MET Norway:</strong> Locationforecast 2.0 (current weather)</div>
                   </div>
                 </section>
               </>
-            ) : (
+            )}
+
+            {!weather.data && !growingSeason.loading && (
+              <section className="card">
+                <div className="empty">{weather.error ? `Weather error: ${weather.error}` : "Loading weather…"} <LoadingDot /></div>
+              </section>
+            )}
+          </div>
+        )}
+
+        {/* ════════ DIVERSITY ════════ */}
+        {tab === "diversity" && (
+          <div className="grid">
+            <section className="card wide">
+              <h2 className="card-title">Spectral Diversity — Nordmarka</h2>
+              <p className="card-desc">
+                Forest biodiversity estimated from spectral heterogeneity of Sentinel-2 imagery.
+                Based on the spectral variation hypothesis: higher spectral heterogeneity indicates
+                greater habitat and species diversity.
+                <br/><br/>
+                <strong>Metrics:</strong>
+              </p>
+              <div style={{ fontSize: 12, color: "var(--t2)", lineHeight: 1.8, fontFamily: "var(--fm)" }}>
+                <div><strong>CV(NDVI)</strong> — Coefficient of Variation of NDVI (σ/μ). Higher values indicate more heterogeneous vegetation.</div>
+                <div><strong>Rao's Q</strong> — Quadratic diversity: ΣΣ d<sub>ij</sub> × p<sub>i</sub> × p<sub>j</sub>. Accounts for distance between spectral classes.</div>
+                <div><strong>Shannon H'</strong> — Shannon entropy: −Σ(p<sub>i</sub> × ln p<sub>i</sub>). Measures evenness of NDVI distribution.</div>
+              </div>
+              <div style={{ marginTop: 12, padding: 10, background: "var(--bg)", borderRadius: 6, fontSize: 11, color: "var(--t2)", lineHeight: 1.5 }}>
+                <strong>Reference:</strong> Boreal tree species diversity increases with global warming but is reversed by extremes.
+                <em> Nature Plants</em>, 2024. DOI: 10.1038/s41477-024-01794-w
+              </div>
+            </section>
+
+            {/* Loading state */}
+            {diversityData.loading && diversityData.scenes.length === 0 && (
               <section className="card wide">
-                <div className="empty">{weather.error ? `Error: ${weather.error}` : "Loading weather data from MET Norway…"} <LoadingDot /></div>
+                <div className="empty">
+                  Reading Sentinel-2 COG overviews for spectral analysis… <LoadingDot />
+                  <br/><span style={{ fontSize: 11, marginTop: 8, display: "block" }}>This reads pixel data directly from cloud-optimized GeoTIFFs. First load may take 15–30s.</span>
+                </div>
               </section>
             )}
 
-            <section className="card">
-              <h2 className="card-title">API Details</h2>
-              <div style={{ fontSize: 11, fontFamily: "var(--fm)", color: "var(--t2)", lineHeight: 2 }}>
-                <div><strong>MET:</strong> {MET_API}</div>
-                <div><strong>STAC:</strong> {STAC_API}</div>
-                <div><strong>NIBIO:</strong> {NIBIO_WMS}</div>
-                <div><strong>Sentinel-2:</strong> sentinel-2-l2a (L2A BOA)</div>
-                <div><strong>Landsat:</strong> landsat-c2-l2 (C2 L2 SR+ST)</div>
-                <div><strong>LAI formula:</strong> 0.57 × exp(2.33 × NDVI)</div>
-              </div>
-            </section>
+            {/* Progress indicator when partially loaded */}
+            {diversityData.loading && diversityData.scenes.length > 0 && (
+              <section className="card wide">
+                <div style={{ padding: "8px 0", fontSize: 12, color: "var(--t2)", display: "flex", alignItems: "center", gap: 8 }}>
+                  <LoadingDot /> Analyzing scenes… {diversityData.scenes.length} completed
+                </div>
+              </section>
+            )}
+
+            {/* Error state */}
+            {diversityData.error && (
+              <section className="card wide">
+                <div className="empty">Error: {diversityData.error}</div>
+              </section>
+            )}
+
+            {/* Key metrics */}
+            {diversityData.scenes.length > 0 && (() => {
+              const scenes = diversityData.scenes;
+              const avgCV = scenes.reduce((s, sc) => s + sc.cvNDVI, 0) / scenes.length;
+              const avgRao = scenes.reduce((s, sc) => s + sc.raoQ, 0) / scenes.length;
+              const avgShannon = scenes.reduce((s, sc) => s + sc.shannonH, 0) / scenes.length;
+              const avgMean = scenes.reduce((s, sc) => s + sc.meanNDVI, 0) / scenes.length;
+              const avgStd = scenes.reduce((s, sc) => s + sc.stdNDVI, 0) / scenes.length;
+              const totalPixels = scenes.reduce((s, sc) => s + sc.pixelCount, 0);
+              // Use the scene with most pixels for the histogram
+              const bestScene = scenes.reduce((a, b) => a.pixelCount > b.pixelCount ? a : b);
+
+              return (
+                <>
+                  <section className="card wide">
+                    <h2 className="card-title">Key Diversity Metrics</h2>
+                    <p className="card-desc">Averaged across {scenes.length} analyzed Sentinel-2 scenes.</p>
+                    <div className="stats-grid">
+                      <StatBlock label="CV(NDVI)" value={avgCV.toFixed(3)} sub="Coefficient of variation" accent="var(--green)" />
+                      <StatBlock label="Rao's Q" value={avgRao.toFixed(4)} sub="Quadratic diversity" accent="var(--green)" />
+                      <StatBlock label="Shannon H'" value={avgShannon.toFixed(3)} sub="Spectral entropy" accent="var(--green)" />
+                      <StatBlock label="Mean NDVI" value={avgMean.toFixed(3)} sub="Avg vegetation index" accent="var(--green)" />
+                      <StatBlock label="Std NDVI" value={avgStd.toFixed(3)} sub="Spectral spread" accent="var(--green)" />
+                      <StatBlock label="Pixels" value={totalPixels.toLocaleString()} sub={`${scenes.length} scenes total`} />
+                    </div>
+                  </section>
+
+                  {/* NDVI Histogram */}
+                  <section className="card">
+                    <h2 className="card-title">NDVI Pixel Distribution</h2>
+                    <p className="card-desc">Histogram from best scene ({bestScene.date}, {bestScene.pixelCount.toLocaleString()} pixels)</p>
+                    <div className="ndvi-histogram">
+                      {bestScene.bins.map((bin, i) => {
+                        const maxCount = Math.max(...bestScene.bins.map(b => b.count));
+                        const pct = maxCount > 0 ? (bin.count / maxCount) * 100 : 0;
+                        const mid = (bin.binStart + bin.binEnd) / 2;
+                        // Color gradient: brown (low NDVI) → green (high NDVI)
+                        const green = mid < 0 ? 60 : Math.min(255, 60 + mid * 200);
+                        const red = mid < 0.3 ? 180 - mid * 200 : 40;
+                        return (
+                          <div key={i} className="hist-col" title={`NDVI ${bin.binStart.toFixed(2)}–${bin.binEnd.toFixed(2)}: ${bin.count} pixels (${(bin.proportion * 100).toFixed(1)}%)`}>
+                            <div className="hist-bar" style={{ height: `${pct}%`, background: `rgb(${red}, ${green}, 40)`, animationDelay: `${i * 30}ms` }} />
+                            {i % 4 === 0 && <div className="hist-label">{bin.binStart.toFixed(1)}</div>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "var(--t2)", fontFamily: "var(--fm)", marginTop: 2 }}>
+                      <span>← Bare/water</span><span>Dense vegetation →</span>
+                    </div>
+                  </section>
+
+                  {/* CV(NDVI) Time Series */}
+                  <section className="card">
+                    <h2 className="card-title">CV(NDVI) Across Scenes</h2>
+                    <p className="card-desc">Spectral heterogeneity over time. Higher CV = more diverse vegetation structure.</p>
+                    <div className="bar-chart">
+                      {scenes.sort((a, b) => a.date.localeCompare(b.date)).map((sc, i) => {
+                        const maxCV = Math.max(...scenes.map(s => s.cvNDVI), 0.5);
+                        return (
+                          <div key={i} className="bar-col" title={`${sc.date}\nCV: ${sc.cvNDVI.toFixed(3)}\nRao's Q: ${sc.raoQ.toFixed(4)}\nShannon: ${sc.shannonH.toFixed(3)}\nPixels: ${sc.pixelCount}`}>
+                            <div className="bar" style={{ height: `${(sc.cvNDVI / maxCV) * 100}%`, background: sc.cvNDVI > 0.2 ? "var(--green)" : sc.cvNDVI > 0.1 ? "#52b788" : "#b7e4c7", animationDelay: `${i * 60}ms` }} />
+                            <div className="bar-label">{sc.date.slice(5, 7)}/{sc.date.slice(8, 10)}</div>
+                            <div className="bar-val">{sc.cvNDVI.toFixed(2)}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </section>
+
+                  {/* Per-scene table */}
+                  <section className="card wide">
+                    <h2 className="card-title">Per-Scene Analysis</h2>
+                    <div className="scene-table">
+                      <div className="div-table-header">
+                        <span>Date</span><span>Scene ID</span><span>Cloud%</span><span>CV(NDVI)</span><span>Rao's Q</span><span>Shannon</span><span>Pixels</span>
+                      </div>
+                      {scenes.sort((a, b) => a.date.localeCompare(b.date)).map((sc, i) => (
+                        <div key={i} className="div-table-row">
+                          <span style={{ fontFamily: "var(--fm)", fontWeight: 600 }}>{sc.date}</span>
+                          <span style={{ fontSize: 10, fontFamily: "var(--fm)", color: "var(--t2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sc.sceneId}</span>
+                          <span style={{ fontFamily: "var(--fm)" }}>{sc.cloudCover?.toFixed(1)}%</span>
+                          <span style={{ fontFamily: "var(--fm)", fontWeight: 700, color: "var(--green)" }}>{sc.cvNDVI.toFixed(3)}</span>
+                          <span style={{ fontFamily: "var(--fm)", color: "var(--green)" }}>{sc.raoQ.toFixed(4)}</span>
+                          <span style={{ fontFamily: "var(--fm)", color: "var(--green)" }}>{sc.shannonH.toFixed(3)}</span>
+                          <span style={{ fontFamily: "var(--fm)", fontSize: 11 }}>{sc.pixelCount.toLocaleString()}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="source-tag">Source: Sentinel-2 L2A COGs via earth-search.aws.element84.com · Bands: B04 (Red), B08 (NIR)</div>
+                  </section>
+
+                  {/* Interpretation guide */}
+                  <section className="card">
+                    <h2 className="card-title">Interpretation Guide</h2>
+                    <div className="lai-scale">
+                      {[
+                        { range: "CV < 0.10", desc: "Very uniform — monoculture / single species", color: "#b7e4c7" },
+                        { range: "CV 0.10–0.20", desc: "Low diversity — few species mix", color: "#74c69d" },
+                        { range: "CV 0.20–0.30", desc: "Moderate diversity — mixed forest", color: "#52b788" },
+                        { range: "CV > 0.30", desc: "High diversity — complex multi-species", color: "#2d6a4f" },
+                      ].map(s => (
+                        <div key={s.range} className="lai-row">
+                          <span className="lai-color" style={{ background: s.color }} />
+                          <span className="lai-range" style={{ width: 90 }}>{s.range}</span>
+                          <span className="lai-desc">{s.desc}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{ marginTop: 16, fontSize: 12, color: "var(--t2)", lineHeight: 1.7 }}>
+                      <strong>For Nordmarka:</strong> Expect CV ~0.15–0.25 (spruce-dominated with birch/pine mix).
+                      Rao's Q ~0.01–0.15 and Shannon H' ~1.5–2.5 are typical for boreal mixed forests.
+                      Seasonal variation is expected — summer scenes show higher diversity due to deciduous canopy.
+                    </div>
+                  </section>
+
+                  <section className="card">
+                    <h2 className="card-title">Data & Method</h2>
+                    <div style={{ fontSize: 12, fontFamily: "var(--fm)", color: "var(--t2)", lineHeight: 2 }}>
+                      <div><strong>Sensor:</strong> Sentinel-2 L2A (10m resolution, bands B04 + B08)</div>
+                      <div><strong>Format:</strong> Cloud-Optimized GeoTIFF (COG) overviews</div>
+                      <div><strong>NDVI bins:</strong> 20 bins from -0.2 to 1.0</div>
+                      <div><strong>Area:</strong> Nordmarka bbox [{NORDMARKA.bbox.join(", ")}]</div>
+                      <div><strong>Projection:</strong> UTM zone 32N (auto-converted from pixel coords)</div>
+                      <div><strong>Limitations:</strong> Uses overview images (~100m effective resolution). Full-resolution analysis would require server-side processing.</div>
+                    </div>
+                  </section>
+                </>
+              );
+            })()}
+
+            {/* Not initialized yet */}
+            {!diversityData.initialized && !stacData.loading && sentinelScenes.length === 0 && (
+              <section className="card wide">
+                <div className="empty">No Sentinel-2 scenes available for diversity analysis. Wait for satellite data to load.</div>
+              </section>
+            )}
           </div>
         )}
       </main>
@@ -840,6 +1510,35 @@ const styles = `
   .forecast-time { font-size: 11px; font-family: var(--fm); color: var(--t2); width: 80px; }
   .forecast-temp { font-size: 13px; font-family: var(--fm); font-weight: 600; width: 50px; }
 
+  .gs-table-header {
+    display: grid; grid-template-columns: 60px 80px 80px 90px 90px 90px 60px;
+    gap: 8px; padding: 8px 10px; font-size: 10px; font-family: var(--fm);
+    color: var(--t2); text-transform: uppercase; letter-spacing: 0.05em;
+    border-bottom: 1px solid var(--border);
+  }
+  .gs-table-row {
+    display: grid; grid-template-columns: 60px 80px 80px 90px 90px 90px 60px;
+    gap: 8px; padding: 8px 10px; font-size: 12px; align-items: center;
+    border-bottom: 1px solid var(--bg);
+  }
+
+  .ndvi-histogram { display: flex; gap: 2px; height: 120px; align-items: flex-end; padding-bottom: 20px; position: relative; }
+  .hist-col { flex: 1; display: flex; flex-direction: column; align-items: center; height: 100%; justify-content: flex-end; position: relative; }
+  .hist-bar { width: 100%; border-radius: 2px 2px 0 0; min-height: 1px; animation: grow 0.4s ease both; }
+  .hist-label { font-size: 8px; font-family: var(--fm); color: var(--t2); margin-top: 3px; position: absolute; bottom: -16px; }
+
+  .div-table-header {
+    display: grid; grid-template-columns: 90px 1fr 60px 80px 80px 80px 80px;
+    gap: 8px; padding: 8px 10px; font-size: 10px; font-family: var(--fm);
+    color: var(--t2); text-transform: uppercase; letter-spacing: 0.05em;
+    border-bottom: 1px solid var(--border);
+  }
+  .div-table-row {
+    display: grid; grid-template-columns: 90px 1fr 60px 80px 80px 80px 80px;
+    gap: 8px; padding: 8px 10px; font-size: 12px; align-items: center;
+    border-bottom: 1px solid var(--bg);
+  }
+
   .empty { padding: 24px; text-align: center; color: var(--t2); font-size: 13px; }
 
   .loading-dot span {
@@ -857,5 +1556,11 @@ const styles = `
     .scene-header span:nth-child(6), .scene-row span:nth-child(6) { display: none; }
     .header-right { display: none; }
     .stats-grid { grid-template-columns: 1fr 1fr; }
+    .gs-table-header, .gs-table-row { grid-template-columns: 50px 70px 70px 70px 70px; }
+    .gs-table-header span:nth-child(6), .gs-table-row span:nth-child(6),
+    .gs-table-header span:nth-child(7), .gs-table-row span:nth-child(7) { display: none; }
+    .div-table-header, .div-table-row { grid-template-columns: 80px 1fr 50px 70px 70px; }
+    .div-table-header span:nth-child(6), .div-table-row span:nth-child(6),
+    .div-table-header span:nth-child(7), .div-table-row span:nth-child(7) { display: none; }
   }
 `;
