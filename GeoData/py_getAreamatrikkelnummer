@@ -1,0 +1,56 @@
+import requests
+import json
+
+def fetch_and_save_matrikkel(matrikkelnummer):
+    """
+    Fetches geocoding data from Kartverket API and saves it to a JSON file.
+    """
+    base_url = "https://api.kartverket.no/eiendom/v1/geokoding"
+    
+    # Define parameters. The requests library will automatically URL-encode 
+    # the matrikkelnummer (e.g., '/' becomes '%2F').
+    # utkoordsys Specify the coordinate system to which you want the geometry 
+    # in the return to be transformed, given as an SRID 
+    # (i.e. the numbers in an EPSG code, e.g. 4258 or 25833). 
+    # The default is 4258. 
+    # 4258 is in practice identical to 4326. 
+    # If a coordinate system other than the standard for geojson (4326/4258) 
+    # is requested, a CRS element is included in a geojson response.
+    params = {
+        "matrikkelnummer": matrikkelnummer,
+        "omrade": "true",
+        "utkoordsys": "4258"
+    }
+    
+    print(f"Requesting data for: {matrikkelnummer}")
+    
+    try:
+        # Perform the GET request
+        response = requests.get(base_url, params=params)
+        
+        # Raise an error if the response status code is not 200 OK
+        response.raise_for_status()
+        
+        # Parse the JSON response
+        data = response.json()
+        
+        # Create a valid filename. 
+        # Since '/' is a directory separator, we replace it with '_' to save as a file.
+        # Resulting filename example: 0301-109_4_0_0.json
+        filename = f"{matrikkelnummer.replace('/', '_')}.json"
+        
+        # Save the JSON data to the file
+        with open(filename, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+            
+        print(f"Success! Data saved to file: {filename}")
+        
+    except requests.exceptions.RequestException as e:
+        print(f"API Request failed: {e}")
+    except IOError as e:
+        print(f"File operation failed: {e}")
+
+if __name__ == "__main__":
+    # Input defined as per request
+    input_matrikkel = "0301-109/4/0/0"
+    fetch_and_save_matrikkel(input_matrikkel)
