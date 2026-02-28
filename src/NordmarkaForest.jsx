@@ -1130,6 +1130,31 @@ export default function NordmarkaForest() {
                 <div className="wms-preview large">
                   <img src={volumeUrl} alt="SR16 Volum" className="wms-img" onError={(e) => { e.target.style.display = "none"; }} />
                 </div>
+                <div className="map-legend">
+                  <div className="legend-title">Legend (m³/ha)</div>
+                  <div className="legend-items">
+                    <div className="legend-item">
+                      <span className="legend-color" style={{ background: "#f7fcf5" }} />
+                      <span className="legend-label">0 – 100</span>
+                    </div>
+                    <div className="legend-item">
+                      <span className="legend-color" style={{ background: "#c7e9c0" }} />
+                      <span className="legend-label">100 – 200</span>
+                    </div>
+                    <div className="legend-item">
+                      <span className="legend-color" style={{ background: "#74c476" }} />
+                      <span className="legend-label">200 – 300</span>
+                    </div>
+                    <div className="legend-item">
+                      <span className="legend-color" style={{ background: "#31a354" }} />
+                      <span className="legend-label">300 – 400</span>
+                    </div>
+                    <div className="legend-item">
+                      <span className="legend-color" style={{ background: "#006d2c" }} />
+                      <span className="legend-label">&gt; 400</span>
+                    </div>
+                  </div>
+                </div>
                 <div className="source-tag">WMS Layer: SRRVOLUB · BBOX: {NORDMARKA.bbox.join(", ")}</div>
               </section>
             )}
@@ -1149,6 +1174,39 @@ export default function NordmarkaForest() {
                 <h3 className="card-subtitle">Biomass (tons/ha)</h3>
                 <div className="wms-preview large">
                   <img src={biomassUrl} alt="SR16 Biomass" className="wms-img" onError={(e) => { e.target.style.display = "none"; }} />
+                </div>
+                <div className="map-legend">
+                  <div className="legend-title">Legend (tons/ha)</div>
+                  <div className="legend-items">
+                    <div className="legend-item">
+                      <span className="legend-color" style={{ background: "#f7fcf5" }} />
+                      <span className="legend-label">0 – 50</span>
+                    </div>
+                    <div className="legend-item">
+                      <span className="legend-color" style={{ background: "#ccebc5" }} />
+                      <span className="legend-label">50 – 100</span>
+                    </div>
+                    <div className="legend-item">
+                      <span className="legend-color" style={{ background: "#a8ddb5" }} />
+                      <span className="legend-label">100 – 150</span>
+                    </div>
+                    <div className="legend-item">
+                      <span className="legend-color" style={{ background: "#7bccc4" }} />
+                      <span className="legend-label">150 – 200</span>
+                    </div>
+                    <div className="legend-item">
+                      <span className="legend-color" style={{ background: "#4eb3d3" }} />
+                      <span className="legend-label">200 – 250</span>
+                    </div>
+                    <div className="legend-item">
+                      <span className="legend-color" style={{ background: "#2b8cbe" }} />
+                      <span className="legend-label">250 – 300</span>
+                    </div>
+                    <div className="legend-item">
+                      <span className="legend-color" style={{ background: "#0868ac" }} />
+                      <span className="legend-label">&gt; 300</span>
+                    </div>
+                  </div>
                 </div>
                 <div className="source-tag">WMS Layer: SRRBMO</div>
               </section>
@@ -1860,6 +1918,47 @@ const styles = `
   .loading-dot span:nth-child(2) { animation-delay: 0.2s; }
   .loading-dot span:nth-child(3) { animation-delay: 0.4s; }
   @keyframes blink { 0%,80%,100% { opacity: 0.2; } 40% { opacity: 1; } }
+
+  /* ═══ Map Legend ═══ */
+  .map-legend {
+    margin-top: 12px;
+    padding: 12px;
+    background: var(--bg);
+    border-radius: 8px;
+    border: 1px solid var(--border);
+  }
+  .legend-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--t2);
+    margin-bottom: 8px;
+    font-family: var(--fm);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .legend-items {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .legend-color {
+    width: 24px;
+    height: 16px;
+    border-radius: 3px;
+    border: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .legend-label {
+    font-size: 11px;
+    font-family: var(--fm);
+    color: var(--t1);
+    white-space: nowrap;
+  }
 
   /* ═══ Mode Toggle ═══ */
   .mode-toggle {
