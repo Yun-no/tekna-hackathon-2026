@@ -1,0 +1,22 @@
+{
+  "name": "skogkontroll",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Forest management dashboard for Nordmarka — real data from Sentinel-2, Landsat, NIBIO SR16, and MET Norway",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "deploy": "vite build && gh-pages -d dist"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^6.0.0",
+    "gh-pages": "^6.3.0"
+  }
+}
