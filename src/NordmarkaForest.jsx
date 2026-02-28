@@ -304,8 +304,8 @@ export default function NordmarkaForest() {
                 <StatBlock label="Area" value={NORDMARKA.area_km2} unit="km²" sub={NORDMARKA.elevation} />
                 <StatBlock label="Latest LAI" value={latestLAI ? latestLAI.lai.toFixed(2) : "—"} sub={latestLAI ? `NDVI: ${latestLAI.ndvi.toFixed(3)} · ${latestLAI.date}` : "Loading…"} accent="var(--green)" />
                 <StatBlock label="Avg LAI" value={avgLAI ? avgLAI.toFixed(2) : "—"} sub={`${laiHistory.length} observations`} accent="var(--green)" />
-                <StatBlock label="Biomass" value="120" unit="t/ha" sub="Avg Norwegian forest" accent="var(--green)" />
-                <StatBlock label="Total Biomass" value={(120 * NORDMARKA.area_km2 * 100 / 1000000).toFixed(2)} unit="Mt" sub={`For ${NORDMARKA.area_km2} km²`} accent="var(--green)" />
+                <StatBlock label="Biomass" value={latestLAI ? (latestLAI.lai * 28.5).toFixed(0) : "—"} unit="t/ha" sub={latestLAI ? `From LAI ${latestLAI.lai.toFixed(2)}` : "Loading…"} accent="var(--green)" />
+                <StatBlock label="Total Biomass" value={latestLAI ? (latestLAI.lai * 28.5 * NORDMARKA.area_km2 * 100 / 1000000).toFixed(2) : "—"} unit="Mt" sub={`For ${NORDMARKA.area_km2} km²`} accent="var(--green)" />
                 <StatBlock label="Temperature" value={temp != null ? temp.toFixed(1) : "—"} unit="°C" sub={weather.data ? "MET Norway — now" : "Loading…"} />
                 <StatBlock label="Sentinel-2" value={sentinelScenes.length} unit="scenes" sub="< 25% cloud cover" />
                 <StatBlock label="Landsat" value={landsatScenes.length} unit="scenes" sub="Landsat 8/9 C2L2" />
@@ -324,6 +324,28 @@ export default function NordmarkaForest() {
                         <div className="bar" style={{ height: `${(h.lai / max) * 100}%`, background: h.lai > 3 ? "var(--green)" : h.lai > 1.5 ? "#52b788" : "#b7e4c7", animationDelay: `${i * 60}ms` }} />
                         <div className="bar-label">{h.month}</div>
                         <div className="bar-val">{h.lai.toFixed(1)}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="empty">Fetching satellite data… <LoadingDot /></div>
+              )}
+            </section>
+
+            <section className="card">
+              <h2 className="card-title">Biomass Growth Over Time</h2>
+              <p className="card-desc">Estimated from LAI using:<br/><code>Biomass = LAI × 28.5 t/ha</code></p>
+              {laiHistory.length > 0 ? (
+                <div className="bar-chart">
+                  {laiHistory.map((h, i) => {
+                    const biomass = h.lai * 28.5;
+                    const max = Math.max(...laiHistory.map((l) => l.lai * 28.5), 150);
+                    return (
+                      <div key={i} className="bar-col" title={`${h.date}\nLAI: ${h.lai.toFixed(2)}\nBiomass: ${biomass.toFixed(1)} t/ha`}>
+                        <div className="bar" style={{ height: `${(biomass / max) * 100}%`, background: biomass > 100 ? "var(--green-d)" : biomass > 60 ? "var(--green)" : "#52b788", animationDelay: `${i * 60}ms` }} />
+                        <div className="bar-label">{h.month}</div>
+                        <div className="bar-val">{biomass.toFixed(0)}</div>
                       </div>
                     );
                   })}
