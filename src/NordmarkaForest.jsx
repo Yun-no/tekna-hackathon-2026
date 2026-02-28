@@ -399,6 +399,91 @@ const ProgressBar = ({ value, max = 100, color = "var(--green)", label, showVal 
   </div>
 );
 
+
+// ═══ Interpretation Functions (Simple Mode) ═══
+
+function interpretNDVI(ndvi) {
+  if (ndvi == null) return { level: 0, label: "Ingen data", color: "#adb5bd", description: "Venter på satellittdata" };
+  if (ndvi >= 0.7) return { level: 3, label: "Frodig og sunn skog", color: "#2d6a4f", description: "Skogen er i svært god stand med tett, grønt bladtak." };
+  if (ndvi >= 0.5) return { level: 2, label: "Normal skoghelse", color: "#52b788", description: "Skogen ser frisk ut med god vegetasjon." };
+  if (ndvi >= 0.3) return { level: 1, label: "Noe glissent", color: "#e9c46a", description: "Noe lavere tetthet enn normalt — kan skyldes årstid eller hogst." };
+  return { level: 0, label: "Lite vegetasjon", color: "#e07a5f", description: "Området har lite grønn vegetasjon — mulig hogstfelt eller snødekke." };
+}
+
+function interpretLAI(lai) {
+  if (lai == null) return { label: "Ingen data", description: "Venter på satellittdata" };
+  if (lai >= 4.0) return { label: "Tett kronetak", description: "God skygge og jordbeskyttelse — typisk for eldre granskog." };
+  if (lai >= 2.5) return { label: "Middels tett", description: "Godt bladtak — vanlig for blandingsskog i Nordmarka." };
+  if (lai >= 1.0) return { label: "Åpent", description: "Relativt åpent — ung skog eller lauvskog om vinteren." };
+  return { label: "Svært åpent", description: "Lite kronetak — hogstfelt eller fjell over tregrensa." };
+}
+
+function interpretGrowingConditions(tempVal, growing) {
+  if (tempVal == null) return { status: "unknown", headline: "Venter på værdata" };
+  if (tempVal >= 5 && growing) return { status: "active", headline: "Gode vekstforhold i dag" };
+  if (tempVal >= 5) return { status: "warm", headline: "Varmt nok for vekst" };
+  if (tempVal >= 0) return { status: "cool", headline: "For kaldt for vekst — trærne hviler" };
+  return { status: "frost", headline: "Frost — trærne er i vinterdvale" };
+}
+
+function interpretWeatherRisk(tempVal, wind, humidityVal, precip) {
+  const alerts = [];
+  if (tempVal != null && tempVal > 25 && humidityVal != null && humidityVal < 30) {
+    alerts.push({ type: "fire", label: "Skogbrannfare", color: "#e07a5f", description: "Høy temperatur og lav luftfuktighet gir brannfare." });
+  }
+  if (wind != null && wind > 15) {
+    alerts.push({ type: "storm", label: "Sterk vind", color: "#457b9d", description: "Vindstyrke " + wind.toFixed(0) + " m/s — fare for vindfall." });
+  }
+  if (tempVal != null && tempVal <= -10) {
+    alerts.push({ type: "frost", label: "Kraftig frost", color: "#a8dadc", description: "Svært kaldt — unngå hogst i frosset treverk." });
+  }
+  if (tempVal != null && tempVal > 0 && tempVal < 3 && precip != null && precip > 0) {
+    alerts.push({ type: "ice", label: "Ising", color: "#b5838d", description: "Nær null med nedbør — glatte forhold i skogen." });
+  }
+  return alerts;
+}
+
+function getSeasonalAdvice(month, tempVal) {
+  const tips = [];
+  if (month >= 11 || month <= 2) {
+    tips.push("Vinterhogst er ideelt — frossen jord gir mindre skade på skogbunnen.");
+    if (tempVal != null && tempVal < -5) tips.push("Vent med å felle store trær i sterk frost — virket kan sprekke.");
+    tips.push("Sjekk for snøbrekk og ta ut skadd virke.");
+  } else if (month >= 3 && month <= 5) {
+    tips.push("Vårens teleløsning — unngå kjøring med tungt utstyr.");
+    tips.push("Planting av nye trær kan starte når telen går.");
+    tips.push("Se etter granbarkbiller når temperaturen stiger.");
+  } else if (month >= 6 && month <= 8) {
+    tips.push("Sommerens vekstsesong — skogen vokser aktivt.");
+    tips.push("Følg med på skogbrannfare i tørre perioder.");
+    tips.push("Markberedning kan gjøres nå for høstens planting.");
+  } else {
+    tips.push("Høsten er god for planting av bartrær.");
+    tips.push("Planlegg vinterens hogst — merk trær som skal felles.");
+    tips.push("Kontroller at skogsveier er klare for vinteren.");
+  }
+  return tips;
+}
+
+function carbonEquivalent(biomassTotal) {
+  const co2Mt = biomassTotal * 0.47 * 3.67;
+  const cars = Math.round((co2Mt * 1e6) / 4.6);
+  if (cars >= 1000) {
+    return "Tilsvarer å fjerne " + (cars / 1000).toFixed(0) + " 000 biler fra veien i ett år";
+  }
+  return "Tilsvarer å fjerne " + cars + " biler fra veien i ett år";
+}
+
+function getLAITrend(history) {
+  if (!history || history.length < 4) return "stable";
+  const half = Math.floor(history.length / 2);
+  const recent = history.slice(half).reduce((s, l) => s + l.lai, 0) / (history.length - half);
+  const earlier = history.slice(0, half).reduce((s, l) => s + l.lai, 0) / half;
+  const diff = recent - earlier;
+  if (diff > 0.3) return "improving";
+  if (diff < -0.3) return "declining";
+  return "stable";
+}
 // ═══ Main App ═══
 
 export default function NordmarkaForest() {
@@ -412,6 +497,13 @@ export default function NordmarkaForest() {
   const [selectedScene, setSelectedScene] = useState(null);
   const [growingSeason, setGrowingSeason] = useState({ historical: null, projected: null, loading: true, error: null });
   const [diversityData, setDiversityData] = useState({ loading: false, error: null, scenes: [], initialized: false });
+  const [viewMode, setViewMode] = useState(
+    () => localStorage.getItem("skogkontroll-mode") || "simple"
+  );
+
+  useEffect(() => {
+    localStorage.setItem("skogkontroll-mode", viewMode);
+  }, [viewMode]);
 
   // ── Load real data on mount ──
   useEffect(() => {
@@ -543,7 +635,12 @@ export default function NordmarkaForest() {
   const speciesUrl = nibioWMSTile("SRRTRESLAG", NORDMARKA.bbox, 600, 500);
   const biomassUrl = nibioWMSTile("SRRBMO", NORDMARKA.bbox, 600, 500);
 
-  const tabs = [
+  const simpleTabs = [
+    { id: "minskog", label: "Min skog", icon: "🌲" },
+    { id: "skogkart", label: "Skogkart", icon: "🗺" },
+    { id: "vaervekst", label: "Vær og vekst", icon: "☀" },
+  ];
+  const advancedTabs = [
     { id: "overview", label: "Overview", icon: "◉" },
     { id: "lai", label: "LAI / NDVI", icon: "🌿" },
     { id: "map", label: "SR16 Map", icon: "🗺" },
@@ -551,9 +648,29 @@ export default function NordmarkaForest() {
     { id: "climate", label: "Climate", icon: "🌡" },
     { id: "diversity", label: "Diversity", icon: "🌳" },
   ];
+  const tabs = viewMode === "simple" ? simpleTabs : advancedTabs;
+
+  const handleModeSwitch = (mode) => {
+    setViewMode(mode);
+    setTab(mode === "simple" ? "minskog" : "overview");
+  };
+
+  const isSimple = viewMode === "simple";
+  const laiTrend = getLAITrend(laiHistory);
+  const trendArrow = laiTrend === "improving" ? "↗" : laiTrend === "declining" ? "↘" : "→";
+  const trendLabel = laiTrend === "improving" ? "Bedre" : laiTrend === "declining" ? "Svakere" : "Stabil";
+  const ndviInterpret = interpretNDVI(latestLAI?.ndvi);
+  const laiInterpret = interpretLAI(latestLAI?.lai);
+  const growingStatus = interpretGrowingConditions(temp, temp >= 5);
+  const weatherRisks = interpretWeatherRisk(temp, windSpeed, humidity, precipitation);
+  const biomassPerHa = latestLAI ? latestLAI.lai * 28.5 : 120;
+  const totalBiomassMt = biomassPerHa * NORDMARKA.area_km2 * 100 / 1e6;
+  const carbonStory = carbonEquivalent(totalBiomassMt);
+  const currentMonth = new Date().getMonth() + 1;
+  const seasonalTips = getSeasonalAdvice(currentMonth, temp);
 
   return (
-    <div className="app">
+    <div className={`app${isSimple ? " simple" : ""}`}>
       <style>{styles}</style>
 
       {/* ── Header ── */}
@@ -570,9 +687,17 @@ export default function NordmarkaForest() {
           </div>
         </div>
         <div className="header-right">
-          <StatusChip status={stacData.loading ? "loading" : stacData.error ? "error" : "ok"} label={stacData.loading ? "Fetching data…" : stacData.error ? "API error" : `${sentinelScenes.length} Sentinel + ${landsatScenes.length} Landsat`} />
-          <StatusChip status={weather.loading ? "loading" : weather.error ? "error" : "ok"} label={weather.loading ? "Weather…" : weather.error ? "MET error" : `${temp?.toFixed(1)}°C`} />
-          <StatusChip status={growingSeason.loading ? "loading" : growingSeason.error ? "error" : "ok"} label={growingSeason.loading ? "ERA5…" : growingSeason.error ? "ERA5 error" : `Growing season`} />
+          <div className="mode-toggle">
+            <button className={`mode-btn${isSimple ? " active" : ""}`} onClick={() => handleModeSwitch("simple")}>Enkel</button>
+            <button className={`mode-btn${!isSimple ? " active" : ""}`} onClick={() => handleModeSwitch("advanced")}>Avansert</button>
+          </div>
+          {!isSimple && (
+            <>
+              <StatusChip status={stacData.loading ? "loading" : stacData.error ? "error" : "ok"} label={stacData.loading ? "Fetching data…" : stacData.error ? "API error" : `${sentinelScenes.length} Sentinel + ${landsatScenes.length} Landsat`} />
+              <StatusChip status={weather.loading ? "loading" : weather.error ? "error" : "ok"} label={weather.loading ? "Weather…" : weather.error ? "MET error" : `${temp?.toFixed(1)}°C`} />
+              <StatusChip status={growingSeason.loading ? "loading" : growingSeason.error ? "error" : "ok"} label={growingSeason.loading ? "ERA5…" : growingSeason.error ? "ERA5 error" : `Growing season`} />
+            </>
+          )}
         </div>
       </header>
 
