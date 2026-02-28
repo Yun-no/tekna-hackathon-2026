@@ -89,7 +89,7 @@ function ndviToLAI(ndvi) {
 async function fetchWeather() {
   const res = await fetchWithTimeout(
     `${MET_API}?lat=${NORDMARKA.center[0]}&lon=${NORDMARKA.center[1]}`,
-    { headers: { "User-Agent": "SkogkontrollApp/1.0 github.com/skogkontroll" } }
+    {}
   );
   if (!res.ok) throw new Error(`MET ${res.status}`);
   return res.json();
@@ -177,7 +177,7 @@ export default function NordmarkaForest() {
     // Fetch Sentinel-2 scenes
     const loadSentinel = async () => {
       try {
-        const data = await searchSTAC("sentinel-2-l2a", "2024-05-01/2025-10-01", 25);
+        const data = await searchSTAC("sentinel-2-l2a", "2024-05-01T00:00:00Z/2025-10-01T00:00:00Z", 25);
         const items = data.features || [];
         // Calculate NDVI/LAI for each scene
         const withLAI = await Promise.all(
@@ -209,7 +209,7 @@ export default function NordmarkaForest() {
     // Fetch Landsat scenes
     const loadLandsat = async () => {
       try {
-        const data = await searchSTAC("landsat-c2-l2", "2024-01-01/2025-12-01", 30);
+        const data = await searchSTAC("landsat-c2-l2", "2024-01-01T00:00:00Z/2025-12-01T00:00:00Z", 30);
         setStacData((s) => ({ ...s, landsat: data.features || [] }));
       } catch (e) {
         console.warn("Landsat fetch failed:", e);
