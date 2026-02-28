@@ -20,7 +20,9 @@ const NORDMARKA = {
 
 const STAC_API = "https://earth-search.aws.element84.com/v1";
 const NIBIO_WMS = "https://wms.nibio.no/cgi-bin/sr16";
-const MET_API = "https://api.met.no/weatherapi/locationforecast/2.0/compact";
+const MET_API = import.meta.env.DEV
+  ? "/api/met/weatherapi/locationforecast/2.0/compact"
+  : "https://met-proxy.janschill.workers.dev/weatherapi/locationforecast/2.0/compact";
 
 // ── Utility: fetch with timeout ──
 async function fetchWithTimeout(url, options = {}, timeout = 12000) {
