@@ -46,7 +46,6 @@ async function searchSTAC(collection, dateRange, maxCloud = 30) {
     datetime: dateRange,
     limit: 12,
     query: { "eo:cloud_cover": { lt: maxCloud } },
-    sortby: [{ field: "datetime", direction: "desc" }],
   };
   const res = await fetchWithTimeout(`${STAC_API}/search`, {
     method: "POST",
@@ -54,7 +53,9 @@ async function searchSTAC(collection, dateRange, maxCloud = 30) {
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`STAC ${res.status}`);
-  return res.json();
+  const data = await res.json();
+  data.features?.sort((a, b) => (b.properties.datetime || "").localeCompare(a.properties.datetime || ""));
+  return data;
 }
 
 // ── Compute NDVI statistics from a Sentinel-2 scene ──
